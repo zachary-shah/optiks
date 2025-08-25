@@ -203,7 +203,7 @@ def optiks(C: np.ndarray,
             print(f"Saved initial solution to {os.path.join(save_path, 'init_solve.npz')}")
 
     # If a solution was passed as an argument use this as initial v(s)
-    if not initsol is None:
+    if initsol is not None:
         initv_of_t = np.linalg.norm(np.diff(initsol, axis=0), axis=1) / dt
         inits_of_t = cumulative_trapezoid(initv_of_t * dt, axis=0, initial=0)
         init = interp1d(inits_of_t, initv_of_t, kind='linear')(s[s <= inits_of_t[-1]])
@@ -523,7 +523,7 @@ def optiks(C: np.ndarray,
             dict(
                 Cnew=Cnew.detach().cpu(),
                 t=t.detach().cpu(),
-                g=g.detach().cpu()
+                g=g.detach().cpu(),
                 s=s.detach().cpu(),
                 ginit = ginit.detach().cpu(),
                 sinit = sinit.detach().cpu(),
@@ -641,7 +641,7 @@ def initSolution(
         k = np.hstack((k, k[-1], k[-1]))
 
     if verbose:
-        print('Solve ODE forward...')
+        print(f'Solve ODE forward for {len(s)} points...')
 
     # Solve ODE forward
     start = time.time()
