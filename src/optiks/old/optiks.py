@@ -4,10 +4,10 @@ from scipy.integrate import cumulative_trapezoid
 from os import environ
 import warnings
 from tqdm import tqdm
-from optiks.options import *
-from optiks.utils import *
-from optiks.loss_functions import custom_loss
-from optiks.consts import GAMMA
+from optiks.old.options import *
+from optiks.old.utils import *
+from optiks.old.loss_functions import custom_loss
+from optiks.old.consts import GAMMA
 
 @dataclass
 class OptiksOutput:
