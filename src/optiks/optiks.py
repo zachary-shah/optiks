@@ -53,7 +53,7 @@ def optiks(C: np.ndarray,
            dsopts=DesignOpts(), 
            svopts=SolverOpts(),
            plot=True,
-           precision="float", # either double or float
+           precision="double", # either double or float
            init_solve: Optional[InitSolve] = None,
     ) -> OptiksOutput:
     """
@@ -88,8 +88,10 @@ def optiks(C: np.ndarray,
 
     if precision == "float":
         dtype = torch.float32
+        dtype_np = np.float32
     elif precision == "double":
         dtype = torch.float64
+        dtype_np = np.float64
     else:
         raise ValueError(f"Unknown precision: {precision}")
 
@@ -133,12 +135,12 @@ def optiks(C: np.ndarray,
     # determine if intermediates exist or were passed in 
     if init_solve is not None:
         print(f"Using provided initial solution.")
-        init = init_solve.init
-        phi = init_solve.phi
-        s=init_solve.s
-        p_of_s = init_solve.p_of_s
-        CC = init_solve.CC
-        p = init_solve.p
+        init = init_solve.init.astype(dtype_np)
+        phi = init_solve.phi.astype(dtype_np)
+        s=init_solve.s.astype(dtype_np)
+        p_of_s = init_solve.p_of_s.astype(dtype_np)
+        CC = init_solve.CC.astype(dtype_np)
+        p = init_solve.p.astype(dtype_np)
     else:
         # Setting up arclength parameterization and initializing solution===================================================
 
@@ -239,6 +241,17 @@ def optiks(C: np.ndarray,
     elif 'acousticfreq' in params.keys():
         params['acousticfreq'][0] = params['acousticfreq'][0].to(device=device)
         params['acousticfreq'][1] = params['acousticfreq'][1].to(device=device)
+
+    # check len of initial trj
+    init = torch.tensor(init, device=device)
+    t_of_s = torch.cumulative_trapezoid(1 / init * ds)
+    t_of_s = torch.hstack((torch.tensor(0, device=device), t_of_s))
+    t_init = torch.arange(0, 1, dt / t_of_s[-1].detach(), dtype=dtype, device=device) * t_of_s[-1]
+    s_of_t = torch_interp1d(s, t_of_s, t_init)
+    p_of_t = torch_interp1d(p_of_s, s, s_of_t)
+    Cinit = torch_interp1d(CC, p, p_of_t)
+    g_init = torch.diff(Cinit, axis=0) / GAMMA / dt
+    print(f"Len time-optimal trj: {Cinit.shape[0]} samp ({Cinit.shape[0] * dt:0.2f})s")
 
     # setting length of time-domain vector. Changing length with constant time sampling during optimization leads to
     # memory leak issue in PyTorch. Workaround is to choose a length s.t. sampling will always be smaller than dt.

@@ -142,13 +142,15 @@ def pns_lim(v, T, g, dt, smax, weights, rv=False, params=None):
     # Fourier approach
     H = torch.cat((torch.zeros_like(tp), dtu * params['pns'][2] / (params['pns'][2] + tp) ** 2 / Smin))
     S = torch.diff(g.T * 0.01, dim=1) / dtu
-    pd = S.shape[1] // 2
-    S = torch.nn.functional.pad(S, (pd, pd))
+    pdl = int(np.ceil(S.shape[1] / 2))
+    pdr = int(np.floor(S.shape[1] / 2))
+
+    S = torch.nn.functional.pad(S, (pdl, pdr))
     H = torch.fft.fftshift(torch.fft.fft(torch.fft.ifftshift(H)))
     S = torch.fft.fftshift(torch.fft.fft(torch.fft.ifftshift(S, dim=1)), dim=1)
     P = H * S
 
-    stim = torch.fft.fftshift(torch.fft.ifft(torch.fft.ifftshift(P, dim=1)), dim=1)[:, pd:-pd]
+    stim = torch.fft.fftshift(torch.fft.ifft(torch.fft.ifftshift(P, dim=1)), dim=1)[:, pdl:-pdr]
 
     stim = 100 * torch.norm(stim.squeeze(), dim=0)
     dp = torch.tensor(0.00005) if len(params['pns']) == 4 else params['pns'][4]
