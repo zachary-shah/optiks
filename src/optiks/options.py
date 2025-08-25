@@ -2,8 +2,6 @@ from dataclasses import dataclass
 
 import torch
 from numpy import ndarray
-from optiks.utils import get_free_gpu
-
 
 @dataclass
 class HardwareOpts:
@@ -97,4 +95,4 @@ class SolverOpts:
     derate: float = 0.8  # factor to derate initial (time optimal) solution v(s) by before optimizing
     initsol: ndarray = None  # custom initial waveform solution - replaces time optimal solution (G/cm)
     lr: float = 1e-4  # initial learning rate for AdamW optimizer
-    device: torch.device = torch.device(get_free_gpu() if torch.cuda.is_available() else 'cpu')  # emptiest GPU
+    device: torch.device = torch.device("cpu")

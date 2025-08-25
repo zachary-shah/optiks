@@ -10,6 +10,8 @@ This script designs a 2mm, 22cm FOV, R=3 spiral with a maximum pns threshold of 
 The hardware used for the SAFE model is a fictional example taken from PulseSeq.
 """
 
+device = get_free_gpu()
+
 # Setting hardware options==============================================================================================
 hwOpts = HardwareOpts(gfin=0, gmax=10, smax=19.5, dt=4e-3)
 
@@ -69,7 +71,14 @@ weights = {'time': 1e4,
 des = DesignOpts(params=params, weights=weights)
 
 # Setting solver options================================================================================================
-sv = SolverOpts(ds=5e-5, maxiter=25000, count=50, derate=0.8)
+sv = SolverOpts(ds=5e-5, maxiter=25000, count=50, derate=0.8, device=device)
 
 # Designing gradient waveforms==========================================================================================
-C_v, t_sf, g_sf, s_sf, g_usf, s_usf, g_last = optiks(C_m, hwopts=hwOpts, dsopts=des, svopts=sv)
+output = optiks(C_m, hwopts=hwOpts, dsopts=des, svopts=sv, plot=True)
+C_v = output.Cnew
+t_sf = output.t
+g_sf = output.g
+s_sf = output.s
+g_usf = output.ginit
+s_usf = output.sinit
+g_last = output.g_last

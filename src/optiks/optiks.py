@@ -1,19 +1,46 @@
 import time
 from scipy.interpolate import CubicSpline, interp1d
 from scipy.integrate import cumulative_trapezoid
-import matplotlib
-matplotlib.use("webagg")
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
 from os import environ
 import warnings
 from tqdm import tqdm
 from optiks.options import *
 from optiks.utils import *
 from optiks.loss_functions import custom_loss
+from optiks.consts import GAMMA
+
+@dataclass
+class OptiksOutput:
+    """
+    Cnew : ndarray
+    t : float
+        Total time for trajectory [ms].
+    g : ndarray
+        Minimum loss gradient waveform for each required axis [G/cm]. Size M x D.
+    s : ndarray
+        Minimum loss slew rate waveform for each required axis [G/cm/ms]. Size M x D.
+    ginit : ndarray
+        Time optimal gradient waveform [G/cm]. Size M' x D.
+    sinit : ndarray
+        Time optimal slew rate waveform [G/cm/ms]. Size M' x D.
+    g_last : ndarray
+        Final descent step gradient waveform [G/cm]. Size M'' x D.
+    """
+    Cnew: torch.Tensor
+    t: float
+    g: torch.Tensor
+    s: torch.Tensor
+    ginit: torch.Tensor
+    sinit: torch.Tensor
+    g_last: torch.Tensor
 
 
-def optiks(C, hwopts=HardwareOpts(), dsopts=DesignOpts(), svopts=SolverOpts()):
+def optiks(C, 
+           hwopts=HardwareOpts(), 
+           dsopts=DesignOpts(), 
+           svopts=SolverOpts(),
+           plot=True,
+    ) -> OptiksOutput:
     """
     Given a k-space trajectory C(p), gradient and slew constraints, and a loss function definition. This function will
     return a gradient waveform that will meet these constraints while jointly minimizing total trajectory time and
@@ -36,24 +63,22 @@ def optiks(C, hwopts=HardwareOpts(), dsopts=DesignOpts(), svopts=SolverOpts()):
 
     Returns
     -------
-    Cnew : ndarray
-    t : float
-        Total time for trajectory [ms].
-    g : ndarray
-        Minimum loss gradient waveform for each required axis [G/cm]. Size M x D.
-    s : ndarray
-        Minimum loss slew rate waveform for each required axis [G/cm/ms]. Size M x D.
-    ginit : ndarray
-        Time optimal gradient waveform [G/cm]. Size M' x D.
-    sinit : ndarray
-        Time optimal slew rate waveform [G/cm/ms]. Size M' x D.
-    g_last : ndarray
-        Final descent step gradient waveform [G/cm]. Size M'' x D.
+    OptiksOutput
+        See above
 
     Notes
     -----
     (c) Matthew McCready 2024.
     """
+
+    # plotting
+    if plot:
+        # lazy imports
+        import matplotlib
+        matplotlib.use("webagg")
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as patches
+
     # Unpacking inputs==================================================================================================
     g0 = hwopts.g0  # initial gradient (G/cm)
     gfin = hwopts.gfin  # final gradient (G/cm)
@@ -68,8 +93,9 @@ def optiks(C, hwopts=HardwareOpts(), dsopts=DesignOpts(), svopts=SolverOpts()):
     count = svopts.count  # number of iterations to display progress after
     derate = svopts.derate  # factor to derate initial (time optimal) solution v(s) by before optimizing
     initsol = svopts.initsol  # custom initial waveform solution - replaces time optimal solution (G/cm)
-    gamma = 4.258  # gyromagnetic ratio [Cycles/ms/G]
-
+    environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'  # make GPU ID match that of nvitop
+    device = svopts.device
+    
     # Setting up arclength parameterization and initializing solution===================================================
 
     # Represent the curve using spline with parametrization p
@@ -92,7 +118,7 @@ def optiks(C, hwopts=HardwareOpts(), dsopts=DesignOpts(), svopts=SolverOpts()):
     L = s_of_p[-1]  # Length of curve
 
     # Decide ds and compute st for the first point
-    stt0 = gamma * smax  # Always assumes the first point is max slew
+    stt0 = GAMMA * smax  # Always assumes the first point is max slew
     st0 = stt0 * dt / 2  # Start at half the gradient for accuracy close to g=0
     s0 = st0 * dt
     if ds is None:
@@ -131,10 +157,6 @@ def optiks(C, hwopts=HardwareOpts(), dsopts=DesignOpts(), svopts=SolverOpts()):
         init[0] = st0
 
     # Preparing optimization variable and moving variables to Torch=====================================================
-
-    environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'  # make GPU ID match that of nvitop
-    device = svopts.device
-
     weights['time'] = weights['time'] / np.trapz(ds / init)  # normalizing timing weight by time optimal duration
 
     # Initializing optimization variable (nu):
@@ -198,7 +220,7 @@ def optiks(C, hwopts=HardwareOpts(), dsopts=DesignOpts(), svopts=SolverOpts()):
         p_of_t = tensorInterp(p_of_s, s, s_of_t)  # initial parameter as function of evenly spaced time
         p_of_t = torch.clip(p_of_t, max=p[-1]*0.999)
         Cnew = tensorInterp(CC, p, p_of_t)  # trajectory as function of evenly spaced time
-        g = torch.diff(Cnew, dim=0) / gamma / dt_temp  # time domain gradient
+        g = torch.diff(Cnew, dim=0) / GAMMA / dt_temp  # time domain gradient
         if gfin is None:
             g = torch.vstack((g0, g))  # pad initial value constraint
         else:
@@ -226,7 +248,7 @@ def optiks(C, hwopts=HardwareOpts(), dsopts=DesignOpts(), svopts=SolverOpts()):
     s_of_t = tensorInterp(s, t_of_s, t)
     p_of_t = tensorInterp(p_of_s, s, s_of_t)
     Cnew = tensorInterp(CC, p, p_of_t)
-    g_last = torch.diff(Cnew, dim=0) / gamma / dt
+    g_last = torch.diff(Cnew, dim=0) / GAMMA / dt
 
     # Calculate time domain waveforms for minimum loss (and time optimal) solution and their power spectra
     v = phi * (1 / (1 + torch.exp(-best)))  # scale to velocity constraint 1
@@ -236,10 +258,10 @@ def optiks(C, hwopts=HardwareOpts(), dsopts=DesignOpts(), svopts=SolverOpts()):
     s_of_t = tensorInterp(s, t_of_s, t)
     p_of_t = tensorInterp(p_of_s, s, s_of_t)
     Cnew = tensorInterp(CC, p, p_of_t)
-    g = torch.diff(Cnew, dim=0) / gamma / dt
+    g = torch.diff(Cnew, dim=0) / GAMMA / dt
     gf = torch.fft.rfft(g, dim=0, n=g.detach().shape[0] * 10) * dt
     freq = torch.fft.rfftfreq(g.detach().shape[0] * 10, d=dt)
-    ktrue = gamma * cumulative_trapezoid(g.detach().cpu().numpy(), axis=0, initial=0) * dt
+    ktrue = GAMMA * cumulative_trapezoid(g.detach().cpu().numpy(), axis=0, initial=0) * dt
 
     init = torch.tensor(init, device=device)
     t_of_s = torch.cumulative_trapezoid(1 / init * ds)
@@ -248,196 +270,205 @@ def optiks(C, hwopts=HardwareOpts(), dsopts=DesignOpts(), svopts=SolverOpts()):
     s_of_t = tensorInterp(s, t_of_s, t_init)
     p_of_t = tensorInterp(p_of_s, s, s_of_t)
     Cinit = tensorInterp(CC, p, p_of_t)
-    g_init = torch.diff(Cinit, axis=0) / gamma / dt
+    g_init = torch.diff(Cinit, axis=0) / GAMMA / dt
     gf_init = torch.fft.rfft(g_init, dim=0, n=g_init.detach().shape[0] * 10) * dt
     freq_init = torch.fft.rfftfreq(g_init.detach().shape[0] * 10, d=dt)
 
     tlim = torch.maximum(t_init[-1], t[-1]).detach().cpu()
 
     # Plotting results==================================================================================================
-    fig, ax = plt.subplots(3, 2, figsize=(15, 15))
+    if plot:
+        fig, ax = plt.subplots(3, 2, figsize=(15, 15))
 
-    # Plot loss statistics
-    ax[0, 0].semilogy(np.arange(i//count+1) * count, lossvec[:i//count+1])
-    ax[0, 0].set_ylabel('Loss')
-    ax[0, 0].set_xlabel('Iteration')
-    ax[0, 1].semilogy(np.arange(i//count+1) * count, lossterms[:i//count+1, :], label=weights.keys())
-    ax[0, 1].set_ylabel('Loss')
-    ax[0, 1].set_xlabel('Iteration')
-    ax[0, 1].legend()
+        # Plot loss statistics
+        ax[0, 0].semilogy(np.arange(i//count+1) * count, lossvec[:i//count+1])
+        ax[0, 0].set_ylabel('Loss')
+        ax[0, 0].set_xlabel('Iteration')
+        ax[0, 1].semilogy(np.arange(i//count+1) * count, lossterms[:i//count+1, :], label=weights.keys())
+        ax[0, 1].set_ylabel('Loss')
+        ax[0, 1].set_xlabel('Iteration')
+        ax[0, 1].legend()
 
-    # Plot time domain waveforms
-    dir = ['X', 'Y', 'Z']
-    for i in range(C.shape[1]):
-        ax[1, i].plot(t_init[:-1].detach().cpu(), g_init[:, i].detach().cpu(), label="Unsafe")
-        ax[1, i].plot(t[:-1].detach().cpu(), g[:, i].detach().cpu(), label="Optimized")
-        ax[1, i].legend()
-        ax[1, i].set_xlabel('Time (ms)')
-        ax[1, i].set_ylabel(dir[i] + '-Gradient Amplitude (G/cm)')
-        ax[1, i].set_xlim(left=0, right=tlim)
-
-    # Plot waveform slew-rates
-    sr = np.abs(np.diff(g.detach().cpu().numpy(), axis=0)) / dt
-    for i in range(C.shape[1]):
-        ax[2, 0].plot(t[:-2].detach().cpu(), sr[:, i], label=dir[i])
-    if not rv:
-        ax[2, 0].plot(t[:-2].detach().cpu(), np.linalg.norm(sr, axis=1), label="Mag")
-    ax[2, 0].set_xlabel('Time (ms)')
-    ax[2, 0].set_ylabel('Slew-Rate (G/cm/ms)')
-    ax[2, 0].legend()
-    ax[2, 0].set_xlim(left=0, right=tlim - 2 * dt)
-
-    # Plot resulting trajectory
-    if C.shape[1] == 2:
-        ax[2, 1].plot(ktrue[:, 0], ktrue[:, 1], label='result')
-        ax[2, 1].plot(Cnew[:, 0].detach().cpu(), Cnew[:, 1].detach().cpu(), ls='--', color='black', label='target')
-        ax[2, 1].axis('equal')
-        ax[2, 1].set_xlabel('k$_x$ (cm$^{-1}$)')
-        ax[2, 1].set_ylabel('k$_y$ (cm$^{-1}$)')
-        ax[2, 1].legend()
-        plt.grid()
-    else:
-        ax[2, 1].remove()
-        ax[2, 1] = fig.add_subplot(4, 3, 8, projection='3d')
-        ax[2, 1].plot(ktrue[:, 0], ktrue[:, 1], ktrue[:, 2], label='result')
-        ax[2, 1].plot(Cnew[:, 0].detach().cpu(), Cnew[:, 1].detach().cpu(), Cnew[:, 2].detach().cpu(), ls='--',
-                      color='black', label='target')
-        ax[2, 1].set_aspect('auto')
-        ax[2, 1].set_xlabel('k$_x$ (cm$^{-1}$)')
-        ax[2, 1].set_ylabel('k$_y$ (cm$^{-1}$)')
-        ax[2, 1].set_zlabel('k$_z$ (cm$^{-1}$)')
-        ax[2, 1].legend()
-        plt.grid()
-
-    # Plot design parameters
-    if 'frequency' in params.keys():
-        fig, axf = plt.subplots(1, C.shape[1], figsize=(15, 5))
+        # Plot time domain waveforms
+        dir = ['X', 'Y', 'Z']
         for i in range(C.shape[1]):
-            axf[i].plot(freq_init.detach().cpu().numpy(), np.abs(gf_init[:, i].detach().cpu().numpy()), label="Unsafe")
-            axf[i].plot(freq.detach().cpu().numpy(), np.abs(gf[:, i].detach().cpu().numpy()), label="Optimized")
-            h = np.diff(axf[0].get_ylim())[0]
-            axf[i].set_xlim((0.4, 8))
-            for j in range(len(params['frequency'])):
-                rect = patches.Rectangle((params['frequency'][j][0], 0), params['frequency'][j][1] - params['frequency'][j][0], h, edgecolor='r', facecolor='r', alpha=0.3)
-                axf[i].add_patch(rect)
-            axf[i].set_ylim((0, axf[0].get_ylim()[1]))
-            axf[i].legend()
-            axf[i].set_xlabel('Frequency (kHz)')
-            axf[i].set_ylabel(dir[i] + '-Gradient Power (a.u.)')
+            ax[1, i].plot(t_init[:-1].detach().cpu(), g_init[:, i].detach().cpu(), label="Unsafe")
+            ax[1, i].plot(t[:-1].detach().cpu(), g[:, i].detach().cpu(), label="Optimized")
+            ax[1, i].legend()
+            ax[1, i].set_xlabel('Time (ms)')
+            ax[1, i].set_ylabel(dir[i] + '-Gradient Amplitude (G/cm)')
+            ax[1, i].set_xlim(left=0, right=tlim)
 
-    if 'pns' in params.keys():
-        fig, axp = plt.subplots(1, 1, figsize=(7.5, 5))
-        dtu = dt * 1e-3
-        Smin = params['pns'][1] / params['pns'][3]
-        tp = torch.arange(0, dtu * (g_init.shape[0] - 2), dtu, dtype=torch.float64, device=device)
-        h = torch.flip(dtu * params['pns'][2] / (params['pns'][2] + tp) ** 2 / Smin, dims=[0])
-        S = torch.diff(g_init.T * 0.01, dim=1)[:, np.newaxis, :] / dtu
-        stim_all = torch.nn.functional.conv1d(S, h[np.newaxis, np.newaxis, :], padding=S.shape[2])[:, :,
-                   :S.shape[2]]
-        stim_all = torch.norm(stim_all.squeeze(), dim=0)
-        axp.plot(t_init[:-2].detach().cpu(), stim_all.detach().cpu(), label="unsafe")
-        tp = torch.arange(0, dtu * (g.shape[0] - 2), dtu, dtype=torch.float64, device=device)
-        h = torch.flip(dtu * params['pns'][2] / (params['pns'][2] + tp) ** 2 / Smin, dims=[0])
-        S = torch.diff(g.T * 0.01, dim=1)[:, np.newaxis, :] / dtu
-        stim_all = torch.nn.functional.conv1d(S, h[np.newaxis, np.newaxis, :], padding=S.shape[2])[:, :,
-                   :S.shape[2]]
-        stim_all = torch.norm(stim_all.squeeze(), dim=0)
-        axp.plot(t[:-2].detach().cpu(), stim_all.detach().cpu(), label="safe")
-        axp.set_xlabel("Time (ms)")
-        axp.set_ylabel("PNS Threshold")
-        axp.legend()
-        axp.set_xlim(left=0, right=tlim - 2 * dt)
-
-    if 'safemodel' in params.keys():
-        fig, axp = plt.subplots(1, 1, figsize=(7.5, 5))
-        hw = params['safemodel'][1]
-        t_steps = torch.arange(0, g.shape[0] - 1, device=g.device)
-        stim = 0
-        ax = ['x', 'y', 'z']
-        for i, fld in enumerate(ax[:g.shape[1]]):
-            coil = getattr(hw, fld)
-
-            alpha = dt / torch.tensor([coil.tau1 + dt,
-                                       coil.tau2 + dt,
-                                       coil.tau3 + dt], device=g.device)[np.newaxis, :]
-
-            h = (1 - alpha) ** t_steps[:, np.newaxis]
-
-            H = torch.fft.fftshift(torch.fft.fft(torch.fft.ifftshift(
-                torch.cat((torch.zeros_like(h), h), dim=0),
-                dim=0), dim=0), dim=0)
-            S = torch.diff(g[:, i] * 0.01, dim=0)[:, np.newaxis] / (dt * 1e-3)
-            S = alpha * torch.cat((S, torch.abs(S), S), dim=1)
-            pd = S.shape[0] // 2
-            S = torch.fft.fftshift(torch.fft.fft(torch.fft.ifftshift(
-                torch.nn.functional.pad(S, (0, 0, pd, pd if S.shape[0] % 2 == 0 else pd+1)),
-                dim=0), dim=0), dim=0)
-            P = H * S
-            p = torch.real(torch.fft.fftshift(torch.fft.ifft(torch.fft.ifftshift(P, dim=0), dim=0), dim=0)[pd:-pd, :])
-            stim_ax = (coil.a1 * torch.abs(p[:, 0]) + coil.a2 * p[:, 1] + coil.a3 * torch.abs(
-                       p[:, 2])) / coil.stim_limit * coil.g_scale * 100
-            axp.plot(t[:stim_ax.numel()].detach().cpu(), stim_ax.detach().cpu(), label='safe ' + fld)
-            stim += ((coil.a1 * torch.abs(p[:, 0]) + coil.a2 * p[:, 1] + coil.a3 * torch.abs(
-                p[:, 2])) / coil.stim_limit * coil.g_scale * 100) ** 2
-
-        stim_all = torch.sqrt(stim).squeeze()
-        axp.plot(t[:stim_all.numel()].detach().cpu(), stim_all.detach().cpu(), label="safe")
-        axp.set_xlabel("Time (ms)")
-        axp.set_ylabel("PNS Threshold")
-        axp.legend()
-        axp.set_xlim(left=0, right=tlim - 2 * dt)
-
-    if 'acoustic' in params.keys():
-        fig, axa = plt.subplots(1, C.shape[1], figsize=(15, 5))
-        t_H = torch.arange(0, 50/dt, device=device) * dt
-        H = torch.cat((torch.zeros((t_H.numel() - 1, 2), device=t_H.device),
-                       dt * tensorInterp(params['acoustic'][0], params['acoustic'][1], t_H.detach()[:-1])))
-        pd = (H.shape[0] - g_init.T.shape[1]) // 2
-        G = torch.nn.functional.pad(g_init[:, :-1].T, (pd, pd)).T
-        H = torch.fft.fftshift(torch.fft.fft(torch.fft.ifftshift(H, dim=0), dim=0), dim=0)
-        G = torch.fft.fftshift(torch.fft.fft(torch.fft.ifftshift(G, dim=0), dim=0), dim=0)
-        A = H[:G.shape[0], :] * G
-        A = torch.fft.fftshift(torch.fft.ifft(torch.fft.ifftshift(A, dim=0), dim=0), dim=0)[pd:, :]
+        # Plot waveform slew-rates
+        sr = np.abs(np.diff(g.detach().cpu().numpy(), axis=0)) / dt
         for i in range(C.shape[1]):
-            axa[i].plot(torch.abs(A[:, i].detach().cpu()), label="Unsafe")
-        pd = (H.shape[0] - g.T.shape[1]) // 2
-        G = torch.nn.functional.pad(g[:, :-1].T, (pd, pd)).T
-        G = torch.fft.fftshift(torch.fft.fft(torch.fft.ifftshift(G, dim=0), dim=0), dim=0)
-        A = H[:G.shape[0], :] * G
-        A = torch.fft.fftshift(torch.fft.ifft(torch.fft.ifftshift(A, dim=0), dim=0), dim=0)[pd:, :]
-        for i in range(C.shape[1]):
-            axa[i].plot(torch.abs(A[:, i].detach().cpu()), label="Optimized")
-        axa[0].set_ylabel("X-Gradient Acoustics (A.U.)")
-        axa[1].set_ylabel("Y-Gradient Acoustics (A.U.)")
-        axa[0].set_xlabel("Time (ms)")
-        axa[1].set_xlabel("Time (ms)")
-        axa[0].legend()
-        axa[1].legend()
+            ax[2, 0].plot(t[:-2].detach().cpu(), sr[:, i], label=dir[i])
+        if not rv:
+            ax[2, 0].plot(t[:-2].detach().cpu(), np.linalg.norm(sr, axis=1), label="Mag")
+        ax[2, 0].set_xlabel('Time (ms)')
+        ax[2, 0].set_ylabel('Slew-Rate (G/cm/ms)')
+        ax[2, 0].legend()
+        ax[2, 0].set_xlim(left=0, right=tlim - 2 * dt)
 
-    if 'acousticfreq' in params.keys():
-        fig, axf = plt.subplots(1, C.shape[1], figsize=(15, 5))
-        for i in range(C.shape[1]):
-            axfr = axf[i].twinx()
-            ln3 = axfr.plot(params['acousticfreq'][1].cpu(), torch.abs(params['acousticfreq'][0][:,i]).cpu(), label="ARF",
-                            color='tab:green')
-            ln1 = axf[i].plot(freq_init.detach().cpu().numpy(), np.abs(gf_init[:, i].detach().cpu().numpy()),
-                              label="Loud")
-            ln2 = axf[i].plot(freq.detach().cpu().numpy(), np.abs(gf[:, i].detach().cpu().numpy()), label="Optimized")
-            lns = ln1 + ln2 + ln3
-            axf[i].legend(lns, [l.get_label() for l in lns])
-            axf[i].set_xlabel('Frequency (kHz)')
-            axf[i].set_ylabel(dir[i] + '-Gradient Power (a.u.)')
-            axfr.set_ylabel(dir[i] + '-Gradient ARF (a.u.)')
-            axf[i].set_xlim((0.3, params['acousticfreq'][1][-1].cpu()))
-            axf[i].set_ylim((0, axf[0].get_ylim()[1]))
-    plt.show()
+        # Plot resulting trajectory
+        if C.shape[1] == 2:
+            ax[2, 1].plot(ktrue[:, 0], ktrue[:, 1], label='result')
+            ax[2, 1].plot(Cnew[:, 0].detach().cpu(), Cnew[:, 1].detach().cpu(), ls='--', color='black', label='target')
+            ax[2, 1].axis('equal')
+            ax[2, 1].set_xlabel('k$_x$ (cm$^{-1}$)')
+            ax[2, 1].set_ylabel('k$_y$ (cm$^{-1}$)')
+            ax[2, 1].legend()
+            plt.grid()
+        else:
+            ax[2, 1].remove()
+            ax[2, 1] = fig.add_subplot(4, 3, 8, projection='3d')
+            ax[2, 1].plot(ktrue[:, 0], ktrue[:, 1], ktrue[:, 2], label='result')
+            ax[2, 1].plot(Cnew[:, 0].detach().cpu(), Cnew[:, 1].detach().cpu(), Cnew[:, 2].detach().cpu(), ls='--',
+                        color='black', label='target')
+            ax[2, 1].set_aspect('auto')
+            ax[2, 1].set_xlabel('k$_x$ (cm$^{-1}$)')
+            ax[2, 1].set_ylabel('k$_y$ (cm$^{-1}$)')
+            ax[2, 1].set_zlabel('k$_z$ (cm$^{-1}$)')
+            ax[2, 1].legend()
+            plt.grid()
+
+        # Plot design parameters
+        if 'frequency' in params.keys():
+            fig, axf = plt.subplots(1, C.shape[1], figsize=(15, 5))
+            for i in range(C.shape[1]):
+                axf[i].plot(freq_init.detach().cpu().numpy(), np.abs(gf_init[:, i].detach().cpu().numpy()), label="Unsafe")
+                axf[i].plot(freq.detach().cpu().numpy(), np.abs(gf[:, i].detach().cpu().numpy()), label="Optimized")
+                h = np.diff(axf[0].get_ylim())[0]
+                axf[i].set_xlim((0.4, 8))
+                for j in range(len(params['frequency'])):
+                    rect = patches.Rectangle((params['frequency'][j][0], 0), params['frequency'][j][1] - params['frequency'][j][0], h, edgecolor='r', facecolor='r', alpha=0.3)
+                    axf[i].add_patch(rect)
+                axf[i].set_ylim((0, axf[0].get_ylim()[1]))
+                axf[i].legend()
+                axf[i].set_xlabel('Frequency (kHz)')
+                axf[i].set_ylabel(dir[i] + '-Gradient Power (a.u.)')
+
+        if 'pns' in params.keys():
+            fig, axp = plt.subplots(1, 1, figsize=(7.5, 5))
+            dtu = dt * 1e-3
+            Smin = params['pns'][1] / params['pns'][3]
+            tp = torch.arange(0, dtu * (g_init.shape[0] - 2), dtu, dtype=torch.float64, device=device)
+            h = torch.flip(dtu * params['pns'][2] / (params['pns'][2] + tp) ** 2 / Smin, dims=[0])
+            S = torch.diff(g_init.T * 0.01, dim=1)[:, np.newaxis, :] / dtu
+            stim_all = torch.nn.functional.conv1d(S, h[np.newaxis, np.newaxis, :], padding=S.shape[2])[:, :,
+                    :S.shape[2]]
+            stim_all = torch.norm(stim_all.squeeze(), dim=0)
+            axp.plot(t_init[:-2].detach().cpu(), stim_all.detach().cpu(), label="unsafe")
+            tp = torch.arange(0, dtu * (g.shape[0] - 2), dtu, dtype=torch.float64, device=device)
+            h = torch.flip(dtu * params['pns'][2] / (params['pns'][2] + tp) ** 2 / Smin, dims=[0])
+            S = torch.diff(g.T * 0.01, dim=1)[:, np.newaxis, :] / dtu
+            stim_all = torch.nn.functional.conv1d(S, h[np.newaxis, np.newaxis, :], padding=S.shape[2])[:, :,
+                    :S.shape[2]]
+            stim_all = torch.norm(stim_all.squeeze(), dim=0)
+            axp.plot(t[:-2].detach().cpu(), stim_all.detach().cpu(), label="safe")
+            axp.set_xlabel("Time (ms)")
+            axp.set_ylabel("PNS Threshold")
+            axp.legend()
+            axp.set_xlim(left=0, right=tlim - 2 * dt)
+
+        if 'safemodel' in params.keys():
+            fig, axp = plt.subplots(1, 1, figsize=(7.5, 5))
+            hw = params['safemodel'][1]
+            t_steps = torch.arange(0, g.shape[0] - 1, device=g.device)
+            stim = 0
+            ax = ['x', 'y', 'z']
+            for i, fld in enumerate(ax[:g.shape[1]]):
+                coil = getattr(hw, fld)
+
+                alpha = dt / torch.tensor([coil.tau1 + dt,
+                                        coil.tau2 + dt,
+                                        coil.tau3 + dt], device=g.device)[np.newaxis, :]
+
+                h = (1 - alpha) ** t_steps[:, np.newaxis]
+
+                H = torch.fft.fftshift(torch.fft.fft(torch.fft.ifftshift(
+                    torch.cat((torch.zeros_like(h), h), dim=0),
+                    dim=0), dim=0), dim=0)
+                S = torch.diff(g[:, i] * 0.01, dim=0)[:, np.newaxis] / (dt * 1e-3)
+                S = alpha * torch.cat((S, torch.abs(S), S), dim=1)
+                pd = S.shape[0] // 2
+                S = torch.fft.fftshift(torch.fft.fft(torch.fft.ifftshift(
+                    torch.nn.functional.pad(S, (0, 0, pd, pd if S.shape[0] % 2 == 0 else pd+1)),
+                    dim=0), dim=0), dim=0)
+                P = H * S
+                p = torch.real(torch.fft.fftshift(torch.fft.ifft(torch.fft.ifftshift(P, dim=0), dim=0), dim=0)[pd:-pd, :])
+                stim_ax = (coil.a1 * torch.abs(p[:, 0]) + coil.a2 * p[:, 1] + coil.a3 * torch.abs(
+                        p[:, 2])) / coil.stim_limit * coil.g_scale * 100
+                axp.plot(t[:stim_ax.numel()].detach().cpu(), stim_ax.detach().cpu(), label='safe ' + fld)
+                stim += ((coil.a1 * torch.abs(p[:, 0]) + coil.a2 * p[:, 1] + coil.a3 * torch.abs(
+                    p[:, 2])) / coil.stim_limit * coil.g_scale * 100) ** 2
+
+            stim_all = torch.sqrt(stim).squeeze()
+            axp.plot(t[:stim_all.numel()].detach().cpu(), stim_all.detach().cpu(), label="safe")
+            axp.set_xlabel("Time (ms)")
+            axp.set_ylabel("PNS Threshold")
+            axp.legend()
+            axp.set_xlim(left=0, right=tlim - 2 * dt)
+
+        if 'acoustic' in params.keys():
+            fig, axa = plt.subplots(1, C.shape[1], figsize=(15, 5))
+            t_H = torch.arange(0, 50/dt, device=device) * dt
+            H = torch.cat((torch.zeros((t_H.numel() - 1, 2), device=t_H.device),
+                        dt * tensorInterp(params['acoustic'][0], params['acoustic'][1], t_H.detach()[:-1])))
+            pd = (H.shape[0] - g_init.T.shape[1]) // 2
+            G = torch.nn.functional.pad(g_init[:, :-1].T, (pd, pd)).T
+            H = torch.fft.fftshift(torch.fft.fft(torch.fft.ifftshift(H, dim=0), dim=0), dim=0)
+            G = torch.fft.fftshift(torch.fft.fft(torch.fft.ifftshift(G, dim=0), dim=0), dim=0)
+            A = H[:G.shape[0], :] * G
+            A = torch.fft.fftshift(torch.fft.ifft(torch.fft.ifftshift(A, dim=0), dim=0), dim=0)[pd:, :]
+            for i in range(C.shape[1]):
+                axa[i].plot(torch.abs(A[:, i].detach().cpu()), label="Unsafe")
+            pd = (H.shape[0] - g.T.shape[1]) // 2
+            G = torch.nn.functional.pad(g[:, :-1].T, (pd, pd)).T
+            G = torch.fft.fftshift(torch.fft.fft(torch.fft.ifftshift(G, dim=0), dim=0), dim=0)
+            A = H[:G.shape[0], :] * G
+            A = torch.fft.fftshift(torch.fft.ifft(torch.fft.ifftshift(A, dim=0), dim=0), dim=0)[pd:, :]
+            for i in range(C.shape[1]):
+                axa[i].plot(torch.abs(A[:, i].detach().cpu()), label="Optimized")
+            axa[0].set_ylabel("X-Gradient Acoustics (A.U.)")
+            axa[1].set_ylabel("Y-Gradient Acoustics (A.U.)")
+            axa[0].set_xlabel("Time (ms)")
+            axa[1].set_xlabel("Time (ms)")
+            axa[0].legend()
+            axa[1].legend()
+
+        if 'acousticfreq' in params.keys():
+            fig, axf = plt.subplots(1, C.shape[1], figsize=(15, 5))
+            for i in range(C.shape[1]):
+                axfr = axf[i].twinx()
+                ln3 = axfr.plot(params['acousticfreq'][1].cpu(), torch.abs(params['acousticfreq'][0][:,i]).cpu(), label="ARF",
+                                color='tab:green')
+                ln1 = axf[i].plot(freq_init.detach().cpu().numpy(), np.abs(gf_init[:, i].detach().cpu().numpy()),
+                                label="Loud")
+                ln2 = axf[i].plot(freq.detach().cpu().numpy(), np.abs(gf[:, i].detach().cpu().numpy()), label="Optimized")
+                lns = ln1 + ln2 + ln3
+                axf[i].legend(lns, [l.get_label() for l in lns])
+                axf[i].set_xlabel('Frequency (kHz)')
+                axf[i].set_ylabel(dir[i] + '-Gradient Power (a.u.)')
+                axfr.set_ylabel(dir[i] + '-Gradient ARF (a.u.)')
+                axf[i].set_xlim((0.3, params['acousticfreq'][1][-1].cpu()))
+                axf[i].set_ylim((0, axf[0].get_ylim()[1]))
+        plt.show()
 
     Cinit = tensorInterp(CC, p, p_of_t)  # Get time optimal trajectory
-    ginit = torch.diff(Cinit, dim=0) / gamma / dt  # Get time optimal gradient
+    ginit = torch.diff(Cinit, dim=0) / GAMMA / dt  # Get time optimal gradient
     s = torch.diff(g, dim=0) / dt  # Get optimized gradient slew-rate
     sinit = torch.diff(ginit, dim=0) / dt  # Get time optimal gradient slew-rate
-    return (Cnew.detach().cpu().numpy(), t.detach().cpu().numpy(), g.detach().cpu().numpy(), s.detach().cpu().numpy(),
-            ginit.detach().cpu().numpy(), sinit.detach().cpu().numpy(), g_last.detach().cpu().numpy())
+
+    return OptiksOutput(
+        Cnew = Cnew.detach().cpu(),
+        t = t.detach().cpu(),
+        g = g.detach().cpu(),
+        s = s.detach().cpu(),
+        ginit = ginit.detach().cpu(),
+        sinit = sinit.detach().cpu(),
+        g_last = g_last.detach().cpu()
+    )
 
 
 def initSolution(C, g0=None, gfin=None, gmax=4, smax=15, dt=4e-3, ds=None, rv=False):
@@ -486,8 +517,6 @@ def initSolution(C, g0=None, gfin=None, gmax=4, smax=15, dt=4e-3, ds=None, rv=Fa
     Python implementation and modifications by Matthew A. McCready (2024).
     """
 
-    gamma = 4.258
-
     # Represent the curve using spline with parametrization p
     Cp = np.diff(C, axis=0)
     Cp = np.vstack((Cp, Cp[-1]))
@@ -507,7 +536,7 @@ def initSolution(C, g0=None, gfin=None, gmax=4, smax=15, dt=4e-3, ds=None, rv=Fa
     L = s_of_p[-1]
 
     # Decide ds and compute st for the first point
-    stt0 = gamma * smax  # Always assumes the first point is max slew
+    stt0 = GAMMA * smax  # Always assumes the first point is max slew
     st0 = stt0 * dt / 6  # Start at fraction of the gradient for accuracy close to g=0
     s0 = 3 * st0 * dt
     if ds is None:
@@ -523,7 +552,7 @@ def initSolution(C, g0=None, gfin=None, gmax=4, smax=15, dt=4e-3, ds=None, rv=Fa
     p_of_s = p_of_s_half[::2]
 
     sta = np.zeros_like(s, dtype=float)
-    sta[0] = np.amin((np.amax(g0 * gamma + st0), gamma * gmax))
+    sta[0] = np.amin((np.amax(g0 * GAMMA + st0), GAMMA * gmax))
 
     # Compute constraints (forbidden line curve)
     phi, k, Cprime = sdotMax(PP, p_of_s_half, s_half, gmax, smax, ds, rv)
@@ -554,7 +583,7 @@ def initSolution(C, g0=None, gfin=None, gmax=4, smax=15, dt=4e-3, ds=None, rv=Fa
         if gfin is None:
             stb[-1] = sta[-1]
         else:
-            stb[-1] = min(max(gfin * gamma, st0), gamma * gmax)
+            stb[-1] = min(max(gfin * GAMMA, st0), GAMMA * gmax)
 
         # Solve ODE backwards
         print('Solve ODE backwards...')
@@ -583,7 +612,7 @@ def initSolution(C, g0=None, gfin=None, gmax=4, smax=15, dt=4e-3, ds=None, rv=Fa
 
     C = PP(p_of_t)
 
-    g = np.diff(C, axis=0) / gamma / dt
+    g = np.diff(C, axis=0) / GAMMA / dt
     g = np.vstack((g, 2 * g[-1, :] - g[-2, :]))
     s = np.linalg.norm(np.diff(g, axis=0), axis=1) / dt
     if np.amax(s) > smax:
@@ -629,8 +658,6 @@ def sdotMax(PP, p_of_s, s, gmax, smax, ds, rv=False):
     Python implementation by Matthew A. McCready (2024).
     """
 
-    gamma = 4.258
-
     s = s.flatten()
     dp_p = p_of_s[1:] - p_of_s[:-1]
     dp_p = np.append(dp_p, dp_p[-1])
@@ -653,10 +680,10 @@ def sdotMax(PP, p_of_s, s, gmax, smax, ds, rv=False):
         k[0] = k[1]
         #k = cur
         # Calc I constraint curve (maximum gradient)
-        sdot1 = gamma * gmax * np.ones_like(s)
+        sdot1 = GAMMA * gmax * np.ones_like(s)
 
         # Calc II constraint curve (curve curvature dependent)
-        sdot2 = np.sqrt(gamma * smax / (np.abs(k) + np.finfo(float).eps))
+        sdot2 = np.sqrt(GAMMA * smax / (np.abs(k) + np.finfo(float).eps))
 
         # Calc total constraint
         sdot = np.minimum.reduce([sdot1, sdot2], axis=0)
@@ -665,7 +692,7 @@ def sdotMax(PP, p_of_s, s, gmax, smax, ds, rv=False):
         eps = 5e-16
         k = np.abs(Css)
         Cs = np.abs(Cs)
-        sdot = gamma * gmax * np.min(1/(Cs+eps), axis=1)
+        sdot = GAMMA * gmax * np.min(1/(Cs+eps), axis=1)
 
     return sdot, k, Cs
 
@@ -704,19 +731,17 @@ def RungeKutte(s, ds, st, Cprime, k, smax, L, rv=False):
     This function is based on the original MATLAB implementation by Michael Lustig (2005).
     Python implementation by Matthew A. McCready (2024).
     """
-
-    gamma = 4.258
     if not rv:
         k = np.abs(k)
-        k1 = ds * 1 / st * np.sqrt(gamma**2 * smax**2 - k[0]**2 * st**4)
-        k2 = ds * 1 / (st + k1 / 2) * np.sqrt(gamma**2 * smax**2 - k[1]**2 * (st + k1 / 2)**4)
-        k3 = ds * 1 / (st + k2 / 2) * np.sqrt(gamma**2 * smax**2 - k[1]**2 * (st + k2 / 2)**4)
-        k4 = ds * 1 / (st + k3) * np.sqrt(gamma**2 * smax**2 - k[2]**2 * (st + k3)**4)
+        k1 = ds * 1 / st * np.sqrt(GAMMA**2 * smax**2 - k[0]**2 * st**4)
+        k2 = ds * 1 / (st + k1 / 2) * np.sqrt(GAMMA**2 * smax**2 - k[1]**2 * (st + k1 / 2)**4)
+        k3 = ds * 1 / (st + k2 / 2) * np.sqrt(GAMMA**2 * smax**2 - k[1]**2 * (st + k2 / 2)**4)
+        k4 = ds * 1 / (st + k3) * np.sqrt(GAMMA**2 * smax**2 - k[2]**2 * (st + k3)**4)
     else:
-        k1 = ds * 1 / st * np.min((-k[0, :] * st ** 2 + gamma * smax) / Cprime[0, :])
-        k2 = ds * 1 / (st + k1 / 2) * np.min((-k[1, :] * (st + k1 / 2) ** 2 + gamma * smax) / Cprime[1, :])
-        k3 = ds * 1 / (st + k2 / 2) * np.min((-k[1, :] * (st + k2 / 2) ** 2 + gamma * smax) / Cprime[1, :])
-        k4 = ds * 1 / (st + k3 / 2) * np.min((-k[2, :] * (st + k3 / 2) ** 2 + gamma * smax) / Cprime[2, :])
+        k1 = ds * 1 / st * np.min((-k[0, :] * st ** 2 + GAMMA * smax) / Cprime[0, :])
+        k2 = ds * 1 / (st + k1 / 2) * np.min((-k[1, :] * (st + k1 / 2) ** 2 + GAMMA * smax) / Cprime[1, :])
+        k3 = ds * 1 / (st + k2 / 2) * np.min((-k[1, :] * (st + k2 / 2) ** 2 + GAMMA * smax) / Cprime[1, :])
+        k4 = ds * 1 / (st + k3 / 2) * np.min((-k[2, :] * (st + k3 / 2) ** 2 + GAMMA * smax) / Cprime[2, :])
 
     res = k1 / 6 + k2 / 3 + k3 / 3 + k4 / 6
 

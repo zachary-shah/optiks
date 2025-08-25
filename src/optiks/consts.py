@@ -1,0 +1,1 @@
+GAMMA = 4.258  # gyromagnetic ratio [Cycles/ms/G]

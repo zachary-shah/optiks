@@ -9,6 +9,11 @@ This script designs a 3mm, 24cm FOV, R=2 spiral for the GE 3T UHP system minimiz
 resonance bands, with a maximum duration of 16.5ms.
 """
 
+# gpu device idx
+# device = get_free_gpu()
+device_idx = 4
+device = torch.device(device_idx)
+
 # Designing desired trajectory (Spiral)=================================================================================
 C = spiralTraj(12, 0.3)
 C_m = np.hstack((np.real(C), np.imag(C))).astype(float)
@@ -46,7 +51,29 @@ des = DesignOpts(params=params, weights=weights)
 
 
 # Setting solver options================================================================================================
-sv = SolverOpts(ds=5e-5, maxiter=20000, count=50)
+sv = SolverOpts(ds=5e-5, maxiter=20000, count=50, device=device)
 
 # Designing gradient waveforms==========================================================================================
-C_v, t_sf, g_sf, s_sf, g_usf, s_usf, g_last = optiks(C_m, hwopts=hw, dsopts=des, svopts=sv)
+output = optiks(C_m, hwopts=hw, dsopts=des, svopts=sv, plot=True)
+C_v = output.Cnew
+t_sf = output.t
+g_sf = output.g
+s_sf = output.s
+g_usf = output.ginit
+s_usf = output.sinit
+g_last = output.g_last
+
+# save output
+torch.save(
+    dict(
+        C=C_v,
+        t=t_sf,
+        g=g_sf,
+        s=s_sf,
+        g_usf=g_usf,
+        s_usf=s_usf,
+        g_last=g_last
+    ), 
+    "data/mechres_spiral.pt",
+)
+print("done.")

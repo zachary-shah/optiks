@@ -11,6 +11,8 @@ This script designs a 2mm, 22cm FOV, R=3 spiral for the GE PREMIER system minimi
 prior measured acoustic response function.
 """
 
+device = get_free_gpu()
+
 # Designing desired trajectory (Spiral)=================================================================================
 gfin = None
 fov = 22 / 3
@@ -60,7 +62,14 @@ weights = {'time': 5e2,
 des = DesignOpts(params=params, weights=weights)
 
 # Setting solver options================================================================================================
-sv = SolverOpts(ds=5e-5, maxiter=15000, count=50, derate=0.85)
+sv = SolverOpts(ds=5e-5, maxiter=15000, count=50, derate=0.85, device=device)
 
 # Designing gradient waveforms==========================================================================================
-C_v, t_sf, g_sf, s_sf, g_usf, s_usf, g_last = optiks(C_m, hwopts=hw, dsopts=des, svopts=sv)
+output = optiks(C_m, hwopts=hw, dsopts=des, svopts=sv, plot=True)
+C_v = output.Cnew
+t_sf = output.t
+g_sf = output.g
+s_sf = output.s
+g_usf = output.ginit
+s_usf = output.sinit
+g_last = output.g_last
