@@ -10,7 +10,8 @@ This script designs a 1mm, 7 leaf rosette for the GE 3T UHP system with a maximu
 using the IEC 60601-2-33 model.
 """
 
-device = get_free_gpu()
+device = torch.device(4)
+
 
 # Setting hardware options==============================================================================================
 hw = HardwareOpts(gfin=0, gmax=10, smax=19.5, dt=4e-3)

@@ -2,59 +2,75 @@ import os
 import numpy as np
 import torch
 from optiks.optiks import optiks, InitSolve
-from optiks.loss_functions import time_bound, slew_lim, freq_min
+from optiks.loss_functions import time_bound, slew_lim, freq_min, pns_lim
 from optiks.utils import spiralTraj
 from optiks.options import HardwareOpts, DesignOpts, SolverOpts
 
 """
-This script designs a 3mm, 24cm FOV, R=2 spiral for the GE 3T UHP system minimizing power deposited in known mechanical
+This script designs a 0.09, 22cm FOV, R=3 spiral for the GE 3T UHP system minimizing power deposited in known mechanical
 resonance bands, with a maximum duration of 16.5ms.
 """
 
 # gpu device idx
 # device = get_free_gpu()
-device_idx = 5
+device_idx = 4
 device = torch.device(device_idx)
 
 # Designing desired trajectory (Spiral)=================================================================================
-C = spiralTraj(12, 0.3)
+C = spiralTraj(22/3, 0.09)
+
 C_m = np.hstack((np.real(C), np.imag(C))).astype(float)
 
+sys = "MAGNUS"
+
 # Setting hardware options==============================================================================================
-hw = HardwareOpts(gmax=10, smax=19.7)
+hw = HardwareOpts(
+    g0 = 0,
+    # gfin = 0,
+    gmax = 5,
+    smax = 20,
+    # dt = 8e-3,
+)
 
 # Setting design options================================================================================================
-system = "UHP"
-
-if system == "UHP":
+Pthresh = 100*0.9
+if sys == "UHP":
     r = 26.5
     c = 359e-6
     alpha = 0.37
     fedges = [[0.51, 0.575], [0.96, 1.06], [1.14, 1.26], [1.4, 1.56], [1.72, 1.9]]  # UHP
-elif system == "PREMIER":
+    hw.smax = 19.7
+elif sys == "PREMIER":
     fedges = [[0.560, 0.620], [0.96, 1.310], [1.860, 1.950]]  # Premier
     fedges = [[0.550, 0.630], [0.96, 1.310], [1.850, 1.960], [4, np.inf]]  # Premier with band-limiting
     r = 23.4
     c = 334e-6
     alpha = 0.333
+    hw.smax = 15
+elif sys == "MAGNUS":
+    fedges = [[0.590, 0.972], [1.1, 1.4], [1.6, 1.8], [5, np.inf]]  # Premier with band-limiting
+    r = 52.2
+    c = 611e-6
+    alpha = 0.324
+    hw.gmax = 10
+    hw.smax = 45
 else:
-    r = 23.4
-    c = 334e-6
-    alpha = 0.333
-
-params = {'terms': [time_bound, slew_lim, freq_min],
-          'bound': 16.5,
+    raise NotImplementedError(f"System {sys} not known.")
+params = {'terms': [time_bound, slew_lim, pns_lim, freq_min],
+          'bound': 40,
+          'pns': [Pthresh, r, c, alpha],
           'frequency': fedges}
 weights = {'time': 1e0,
            'slew': 1e1,
+           'pns': 5e1,
            'frequency': 4e3}
 
 des = DesignOpts(params=params, weights=weights)
 
 
 # Setting solver options================================================================================================
-save_path = "./data/spi_mechres"
-sv = SolverOpts(ds=5e-5, maxiter=20000, count=50, device=device, save=True, save_path=save_path)
+save_path = "./data/spi_mechres_magnus"
+sv = SolverOpts(ds=5e-5, maxiter=20000, count=50, device=device, save=True, derate=0.9, save_path=save_path)
 
 # save initial solve so we don't have to redo every time
 if os.path.exists(os.path.join(save_path, "init_solve.npz")):
@@ -85,6 +101,6 @@ torch.save(
         s_usf=s_usf,
         g_last=g_last
     ), 
-    "data/mechres_spiral_new.pt",
+    "data/mechres_spiral_magnus.pt",
 )
 print("done.")

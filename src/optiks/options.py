@@ -97,5 +97,5 @@ class SolverOpts:
     lr: float = 1e-4  # initial learning rate for AdamW optimizer
     device: torch.device = torch.device("cpu")
     us_factor: int = 10
-    save: bool = True
+    save: bool = False
     save_path: Optional[str] = "./optiks"
