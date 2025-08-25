@@ -231,7 +231,7 @@ def optiks(C: np.ndarray,
     p_of_s = torch.tensor(p_of_s, device=device)
     CC = torch.tensor(CC, device=device)
     p = torch.tensor(p, device=device)
-    zro = torch.tensor(0, device=device)  # padding used later
+    zro = torch.tensor([0], device=device)  # padding used later
     g0 = torch.tensor(g0*np.ones((1, C.shape[1])), device=device)
     if not gfin is None:
         gfin = torch.tensor(gfin*np.ones((1, C.shape[1])), device=device)
@@ -265,7 +265,11 @@ def optiks(C: np.ndarray,
     lossvec = np.zeros(maxiter // count)
     lossterms = np.zeros((maxiter // count, len(params['terms'])))
     minloss = np.inf
-    best = nu
+    best = nu.detach().clone()
+
+    # compile step
+    print(f"Compiling optimizer...")
+    # compiled_optimizer_step = torch.compile(optimizer.step)
 
     # Performing gradient descent for maxiter steps=====================================================================
     pbar = tqdm(total=maxiter, desc="Optiks", leave=False)
@@ -273,13 +277,13 @@ def optiks(C: np.ndarray,
         optimizer.zero_grad()
 
         # Address velocity constraint
-        v = phi * (1 / (1 + torch.exp(-nu)))  # scale to velocity constraint 1
-
+        v = phi * torch.sigmoid(nu) # scale to velocity constraint 1
+        
         # Move to time domain and get gradient waveform
         t_of_s = torch.cumulative_trapezoid(1 / v * ds)
         t_of_s = torch.hstack((zro, t_of_s))  # Time as function of arc-length
         t = tsamp * t_of_s[-1]  # evenly spaced time
-        dt_temp = t[1].detach().cpu()  # time sampling on this iteration.
+        dt_temp = t[1].item() #.detach().cpu()  # time sampling on this iteration. TODO: why detach?
         # Note: use of a set time sampling varies size of t each iteration. This causes memory leakage due to some
         # internal PyTorch error. Solution not found, so sampling is allowed to change and length of t is held constant.
         s_of_t = torch_interp1d(s, t_of_s, t)  # arc-length as function of evenly spaced time
@@ -294,21 +298,23 @@ def optiks(C: np.ndarray,
             g = torch.vstack((g0, g, gfin))  # pad initial and final value constraints
 
         loss, terms = custom_loss(v, t_of_s[-1], g, dt_temp, smax, weights, rv=rv, params=params)  # calculate loss
-        if loss < minloss:
-            minloss = loss
-            best = nu
-        elif not torch.isfinite(loss):
-            print("Loss went infinite, terminating.")
-            break
 
         loss.backward()  # backprop
         optimizer.step()  # GD step
-        if i % count == 0:  # record loss statistics
-            lossvec[i // count] = loss.detach().cpu().numpy()
-            lossterms[i // count] = torch.tensor(terms).detach().cpu()
+        # compiled_optimizer_step()
 
-        pbar.update(1)
-        pbar.set_postfix(loss=loss.item())
+        if i % count == 0:  # record loss statistics
+            if loss < minloss:
+                minloss = loss.item()
+                best = nu.detach().clone()
+            elif not torch.isfinite(loss):
+                print("Loss went infinite, terminating.")
+                break
+            
+            lossvec[i // count] = loss.item()
+            lossterms[i // count] = torch.tensor(terms).cpu()
+            pbar.update(count)
+            pbar.set_postfix(loss=loss.item())
 
     # Collect waveforms=================================================================================================
 

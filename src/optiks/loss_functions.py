@@ -42,9 +42,12 @@ def custom_loss(v, T, g, dt, smax, weights, rv=False, params=None):
 
     """
     terms = [None] * len(params['terms'])
+    tot = 0
     for i, func in enumerate(params['terms']):
-        terms[i] = func(v, T, g, dt, smax, weights, rv, params)
-    return sum(terms), terms
+        t_ = func(v, T, g, dt, smax, weights, rv, params)
+        tot += t_
+        terms[i] = t_.item()
+    return tot, terms
 
 
 def time_min(v, T, g, dt, smax, weights, rv=False, params=None):
@@ -111,7 +114,7 @@ def slew_lim(v, T, g, dt, smax, weights, rv=False, params=None):
     dx = torch.tensor(0.0002) if 'slew' not in params.keys() else params['slew']
     sr[:3] = sr[:3] + smax/4
     term = weights['slew'] * (-torch.sum(torch.log(torch.relu(smax - sr[sr < (smax - dx)])))
-                        + torch.sum(sr[sr >= (smax - dx)] / dx - torch.log(dx) + (1 - smax / dx))) / sr.detach().numel()
+                        + torch.sum(sr[sr >= (smax - dx)] / dx - torch.log(dx) + (1 - smax / dx))) / sr.numel()
     return term
 
 
@@ -155,7 +158,7 @@ def pns_lim(v, T, g, dt, smax, weights, rv=False, params=None):
     stim = 100 * torch.norm(stim.squeeze(), dim=0)
     dp = torch.tensor(0.00005) if len(params['pns']) == 4 else params['pns'][4]
     term = weights['pns'] * (torch.sum(torch.relu(-torch.log(params['pns'][0] - stim[stim < (params['pns'][0] - dp)]) + 0.7))
-        + torch.sum(stim[stim >= (params['pns'][0] - dp)] / dp - torch.log(dp) + (1 - params['pns'][0] / dp))) / stim.detach().numel()
+        + torch.sum(stim[stim >= (params['pns'][0] - dp)] / dp - torch.log(dp) + (1 - params['pns'][0] / dp))) / stim.numel()
 
     return term
 
@@ -236,13 +239,31 @@ def freq_min(v, T, g, dt, smax, weights, rv=False, params=None):
     params : dict
         Uses key 'frequency' with value list of frequncy band edge pairs [[low1, high1], [low2, high2], ...] in kHz.
     """
-    nf = int(g.detach().numel() / 2 * 10)
+    nf = int(g.numel() / 2 * 10)
     gf = dt * torch.fft.rfft(g, n=nf, dim=0)
-    freq = torch.fft.rfftfreq(nf, d=dt)
-    idx = np.argwhere(reduce(lambda ind, fed: np.logical_or(ind, np.logical_and(fed[0] <= freq, freq <= fed[1])),
-                             params['frequency'], np.logical_and(params['frequency'][0][0] <= freq, freq <= params['frequency'][0][1])))
 
-    term = weights['frequency'] * torch.norm(gf[idx])
+    with torch.no_grad():
+        freq = torch.fft.rfftfreq(nf, d=dt).to(g.device)
+        freq_bins = params['frequency']
+        idx = torch.argwhere(
+            reduce(
+                lambda ind, fed: 
+                    torch.logical_or(
+                        ind, 
+                        torch.logical_and(
+                            fed[0] <= freq, 
+                            freq <= fed[1],
+                        ),
+                    ), 
+                    freq_bins, 
+                    torch.logical_and(
+                        freq_bins[0][0] <= freq, 
+                        freq <= freq_bins[0][1],
+                    )
+            )
+        ).T
+    
+    term = weights['frequency'] * gf[idx].norm()
 
     return term
 

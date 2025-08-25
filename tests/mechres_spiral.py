@@ -13,11 +13,14 @@ resonance bands, with a maximum duration of 16.5ms.
 
 # gpu device idx
 # device = get_free_gpu()
-device_idx = 4
+device_idx = 3
+cache_init = True
+
 device = torch.device(device_idx)
 
 # Designing desired trajectory (Spiral)=================================================================================
-C = spiralTraj(22/3, 0.09)
+# C = spiralTraj(22/3, 0.09)
+C = spiralTraj(12, 0.3)
 
 C_m = np.hstack((np.real(C), np.imag(C))).astype(float)
 
@@ -29,7 +32,6 @@ hw = HardwareOpts(
     # gfin = 0,
     gmax = 5,
     smax = 20,
-    # dt = 8e-3,
 )
 
 # Setting design options================================================================================================
@@ -48,7 +50,7 @@ elif sys == "PREMIER":
     alpha = 0.333
     hw.smax = 15
 elif sys == "MAGNUS":
-    fedges = [[0.590, 0.972], [1.1, 1.4], [1.6, 1.8], [5, np.inf]]  # Premier with band-limiting
+    fedges = [[0.590, 0.972], [1.1, 1.4], [1.6, 1.8]] #, [5, np.inf]]  # Premier with band-limiting
     r = 52.2
     c = 611e-6
     alpha = 0.324
@@ -56,10 +58,12 @@ elif sys == "MAGNUS":
     hw.smax = 45
 else:
     raise NotImplementedError(f"System {sys} not known.")
-params = {'terms': [time_bound, slew_lim, pns_lim, freq_min],
-          'bound': 40,
-          'pns': [Pthresh, r, c, alpha],
-          'frequency': fedges}
+params = {
+    'terms': [time_bound, slew_lim, pns_lim, freq_min],
+    'bound': 10,
+    'pns': [Pthresh, r, c, alpha],
+    'frequency': fedges,
+}
 weights = {'time': 1e0,
            'slew': 1e1,
            'pns': 5e1,
@@ -70,10 +74,10 @@ des = DesignOpts(params=params, weights=weights)
 
 # Setting solver options================================================================================================
 save_path = "./data/spi_mechres_magnus"
-sv = SolverOpts(ds=5e-5, maxiter=20000, count=50, device=device, save=True, derate=0.9, save_path=save_path)
+sv = SolverOpts(ds=5e-5, maxiter=20000, count=50, device=device, save=True, save_path=save_path)
 
 # save initial solve so we don't have to redo every time
-if os.path.exists(os.path.join(save_path, "init_solve.npz")):
+if cache_init and os.path.exists(os.path.join(save_path, "init_solve.npz")):
     init_solve = InitSolve(**np.load(os.path.join(save_path, "init_solve.npz")))
     print(f"Loaded initial solution from {os.path.join(save_path, 'init_solve.npz')}")
 else:
