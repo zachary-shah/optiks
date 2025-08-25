@@ -5,6 +5,7 @@ from os import environ
 import warnings
 import torch
 import numpy as np
+from typing import Optional
 from tqdm import tqdm
 from dataclasses import dataclass
 from optiks.options import HardwareOpts, DesignOpts, SolverOpts
@@ -38,7 +39,7 @@ class OptiksOutput:
     g_last: torch.Tensor
 
 
-def optiks(C, 
+def optiks(C: np.ndarray,
            hwopts=HardwareOpts(), 
            dsopts=DesignOpts(), 
            svopts=SolverOpts(),
@@ -474,7 +475,15 @@ def optiks(C,
     )
 
 
-def initSolution(C, g0=None, gfin=None, gmax=4, smax=15, dt=4e-3, ds=None, rv=False):
+def initSolution(
+        C: np.ndarray,
+        g0: float = 0, 
+        gfin: Optional[float] = None, 
+        gmax: float = 4, 
+        smax: float = 15, 
+        dt: float = 4e-3, 
+        ds: Optional[float] = None, 
+        rv: bool = False) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Compute the velocity in arclength to meet gradient and slew constraints.
 
@@ -488,7 +497,7 @@ def initSolution(C, g0=None, gfin=None, gmax=4, smax=15, dt=4e-3, ds=None, rv=Fa
         The curve in k-space, provided in any parametrization [1/cm].
         Accepts a Nx2 array for 2D trajectories or a Nx3 array for 3D trajectories.
     g0 : float, optional
-        Initial gradient amplitude. If not specified, defaults to `0`.
+        Initial gradient amplitude. Defaults to `0`.
     gfin : float, optional
         Gradient value at the end of the trajectory. If not achievable,
         the result will be the largest possible amplitude. If not specified,
@@ -548,9 +557,6 @@ def initSolution(C, g0=None, gfin=None, gmax=4, smax=15, dt=4e-3, ds=None, rv=Fa
     s = np.arange(0, L, ds)
     s_half = np.arange(0, L, ds / 2)
 
-    if g0 is None:
-        g0 = 0
-
     p_of_s_half = interp1d(s_of_p, p, kind='cubic')(s_half)
     p_of_s = p_of_s_half[::2]
 
@@ -558,7 +564,7 @@ def initSolution(C, g0=None, gfin=None, gmax=4, smax=15, dt=4e-3, ds=None, rv=Fa
     sta[0] = np.amin((np.amax(g0 * GAMMA + st0), GAMMA * gmax))
 
     # Compute constraints (forbidden line curve)
-    phi, k, Cprime = sdotMax(PP, p_of_s_half, s_half, gmax, smax, ds, rv)
+    phi, k, Cprime = sdotMax(PP, p_of_s_half, s_half, gmax, smax, rv)
     if rv:
         k = np.vstack((k, k[-1], k[-1]))  # Extend for the Runge-Kutte method
     else:
@@ -571,8 +577,7 @@ def initSolution(C, g0=None, gfin=None, gmax=4, smax=15, dt=4e-3, ds=None, rv=Fa
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message="invalid value encountered in sqrt")
         for n in range(2, len(s) + 1):
-            dstds = RungeKutte(s[n - 1], ds, sta[n - 2], Cprime[(2 * n - 4):(2 * n - 1)],
-                               k[(2 * n - 4):(2 * n - 1)], smax, L, rv=rv)
+            dstds = RungeKutte(ds, sta[n - 2], Cprime[(2 * n - 4):(2 * n - 1)], k[(2 * n - 4):(2 * n - 1)], smax, rv=rv)
             tmpst = sta[n - 2] + dstds
 
             if np.isnan(tmpst):
@@ -591,8 +596,7 @@ def initSolution(C, g0=None, gfin=None, gmax=4, smax=15, dt=4e-3, ds=None, rv=Fa
         # Solve ODE backwards
         print('Solve ODE backwards...')
         for n in range(len(s) - 1, 0, -1):
-            dstds = RungeKutte(s[n - 1], ds, stb[n], Cprime[2 * n:max(2 * n - 3, 0) or None:-1],
-                               k[2 * n:max(2 * n - 3, 0) or None:-1], smax, L, rv=rv)
+            dstds = RungeKutte(ds, stb[n], Cprime[2 * n:max(2 * n - 3, 0) or None:-1], k[2 * n:max(2 * n - 3, 0) or None:-1], smax, rv=rv)
 
             tmpst = stb[n] + dstds
 
@@ -625,7 +629,14 @@ def initSolution(C, g0=None, gfin=None, gmax=4, smax=15, dt=4e-3, ds=None, rv=Fa
     return st, phi, k, s_half
 
 
-def sdotMax(PP, p_of_s, s, gmax, smax, ds, rv=False):
+def sdotMax(
+        PP: CubicSpline, 
+        p_of_s: np.ndarray,
+        s: np.ndarray,
+        gmax: float,
+        smax: float,
+        rv: bool = False,
+    ):
     """
     This function calculates the upper bound for the time parametrization `sdot`
     (a non-scaled maximum gradient constraint) as a function of arclength `s`,
@@ -700,15 +711,13 @@ def sdotMax(PP, p_of_s, s, gmax, smax, ds, rv=False):
     return sdot, k, Cs
 
 
-def RungeKutte(s, ds, st, Cprime, k, smax, L, rv=False):
+def RungeKutte(ds, st, Cprime, k, smax, rv=False):
     """
     This function performs a single RK4 integration step for the nonlinear ODE
     described in [1], using arclength as the integration variable.
 
     Parameters
     ----------
-    s : float
-        Current arclength.
     ds : float
         Step size for the arclength.
     st : float
@@ -719,8 +728,6 @@ def RungeKutte(s, ds, st, Cprime, k, smax, L, rv=False):
         K-space trajectory curvature parameterized by arclength.
     smax : float
         Maximum allowed slew rate.
-    L : float
-        Total length of the k-space trajectory.
     rv : bool
         Flag indicating whether to use the rotationally variant solution.
 
