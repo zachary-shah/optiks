@@ -1,4 +1,4 @@
-![alt text](https://github.com/mattmc-stanford/optiks/blob/main/OPTIKS_LOGO.png?raw=true)
+![alt text](doc/OPTIKS_LOGO.png)
 
 # OPTIKS
 
@@ -10,7 +10,7 @@ loss function specified by the user. Implemented loss function terms include: ti
 mechanical resonance minimization, PNS limitation, and acoustic noise minimization. The user may define and optimize
 their own loss function terms in any combination with existing ones.
 
-![alt text](https://github.com/mattmc-stanford/optiks/blob/main/OPTIKS_Fig1.png?raw=true)
+![alt text](doc/OPTIKS_Fig1.png)
 
 ## Installation / Setup
 
@@ -38,7 +38,7 @@ _**optiks.loss_functions**_: includes implemented loss function terms<br />
 _**optiks.utils**_: includes additional useful functions (spiral/rosette design, torch tensor 1d interp, gpu selection)<br />
 _**optiks.optiks**_: inludes functions for designing gradient waveform. Users should only need function _optiks_.
 
-![alt text](https://github.com/mattmc-stanford/optiks/blob/main/Algorithm.png?raw=true)
+![alt text](doc/Algorithm.png)
 
 ## Example Scripts
 
@@ -80,7 +80,7 @@ For time-domain constraints such as slew-rate and PNS limits gradient descent in
 violate log-barriers in the time-domain. To relax these constraints we introduce the "leaky" log-barrier function which
 becomes linear after some point x<sub>max</sub> - &delta;.
 
-![alt text](https://github.com/mattmc-stanford/optiks/blob/main/leaky_logb_wb.png?raw=true)
+![alt text](doc/leaky_logb_wb.png)
 
 ## References
 _Paper coming soon_
