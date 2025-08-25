@@ -176,10 +176,11 @@ def optiks(C, hwopts=HardwareOpts(), dsopts=DesignOpts(), svopts=SolverOpts()):
     lossvec = np.zeros(maxiter // count)
     lossterms = np.zeros((maxiter // count, len(params['terms'])))
     minloss = np.inf
+    best = nu
 
     # Performing gradient descent for maxiter steps=====================================================================
-
-    for i in tqdm(range(maxiter)):
+    pbar = tqdm(total=maxiter, desc="Optiks", leave=False)
+    for i in range(maxiter):
         optimizer.zero_grad()
 
         # Address velocity constraint
@@ -212,6 +213,9 @@ def optiks(C, hwopts=HardwareOpts(), dsopts=DesignOpts(), svopts=SolverOpts()):
         if i % count == 0:  # record loss statistics
             lossvec[i // count] = loss.detach().cpu().numpy()
             lossterms[i // count] = torch.tensor(terms).detach().cpu()
+
+        pbar.update(1)
+        pbar.set_postfix(loss=loss.item())
 
     # Collect waveforms=================================================================================================
 
