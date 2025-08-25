@@ -3,9 +3,12 @@ from scipy.interpolate import CubicSpline, interp1d
 from scipy.integrate import cumulative_trapezoid
 from os import environ
 import warnings
+import torch
+import numpy as np
 from tqdm import tqdm
-from optiks.options import *
-from optiks.utils import *
+from dataclasses import dataclass
+from optiks.options import HardwareOpts, DesignOpts, SolverOpts
+from optiks.interp import torch_interp1d
 from optiks.loss_functions import custom_loss
 from optiks.consts import GAMMA
 
@@ -215,11 +218,11 @@ def optiks(C,
         dt_temp = t[1].detach().cpu()  # time sampling on this iteration.
         # Note: use of a set time sampling varies size of t each iteration. This causes memory leakage due to some
         # internal PyTorch error. Solution not found, so sampling is allowed to change and length of t is held constant.
-        s_of_t = tensorInterp(s, t_of_s, t)  # arc-length as function of evenly spaced time
+        s_of_t = torch_interp1d(s, t_of_s, t)  # arc-length as function of evenly spaced time
         s_of_t = torch.clip(s_of_t, max=s[-1]*0.999)
-        p_of_t = tensorInterp(p_of_s, s, s_of_t)  # initial parameter as function of evenly spaced time
+        p_of_t = torch_interp1d(p_of_s, s, s_of_t)  # initial parameter as function of evenly spaced time
         p_of_t = torch.clip(p_of_t, max=p[-1]*0.999)
-        Cnew = tensorInterp(CC, p, p_of_t)  # trajectory as function of evenly spaced time
+        Cnew = torch_interp1d(CC, p, p_of_t)  # trajectory as function of evenly spaced time
         g = torch.diff(Cnew, dim=0) / GAMMA / dt_temp  # time domain gradient
         if gfin is None:
             g = torch.vstack((g0, g))  # pad initial value constraint
@@ -245,9 +248,9 @@ def optiks(C,
     t_of_s = torch.cumulative_trapezoid(1 / v * ds)
     t_of_s = torch.hstack((zro, t_of_s))  # Time as function of arc-length
     t = torch.arange(0, 1, dt / t_of_s[-1].detach(), dtype=torch.float64, device=device) * t_of_s[-1]
-    s_of_t = tensorInterp(s, t_of_s, t)
-    p_of_t = tensorInterp(p_of_s, s, s_of_t)
-    Cnew = tensorInterp(CC, p, p_of_t)
+    s_of_t = torch_interp1d(s, t_of_s, t)
+    p_of_t = torch_interp1d(p_of_s, s, s_of_t)
+    Cnew = torch_interp1d(CC, p, p_of_t)
     g_last = torch.diff(Cnew, dim=0) / GAMMA / dt
 
     # Calculate time domain waveforms for minimum loss (and time optimal) solution and their power spectra
@@ -255,9 +258,9 @@ def optiks(C,
     t_of_s = torch.cumulative_trapezoid(1 / v * ds)
     t_of_s = torch.hstack((zro, t_of_s))  # Time as function of arc-length
     t = torch.arange(0, 1, dt/t_of_s[-1].detach(), dtype=torch.float64, device=device) * t_of_s[-1]
-    s_of_t = tensorInterp(s, t_of_s, t)
-    p_of_t = tensorInterp(p_of_s, s, s_of_t)
-    Cnew = tensorInterp(CC, p, p_of_t)
+    s_of_t = torch_interp1d(s, t_of_s, t)
+    p_of_t = torch_interp1d(p_of_s, s, s_of_t)
+    Cnew = torch_interp1d(CC, p, p_of_t)
     g = torch.diff(Cnew, dim=0) / GAMMA / dt
     gf = torch.fft.rfft(g, dim=0, n=g.detach().shape[0] * 10) * dt
     freq = torch.fft.rfftfreq(g.detach().shape[0] * 10, d=dt)
@@ -267,9 +270,9 @@ def optiks(C,
     t_of_s = torch.cumulative_trapezoid(1 / init * ds)
     t_of_s = torch.hstack((zro, t_of_s))
     t_init = torch.arange(0, 1, dt / t_of_s[-1].detach(), dtype=torch.float64, device=device) * t_of_s[-1]
-    s_of_t = tensorInterp(s, t_of_s, t_init)
-    p_of_t = tensorInterp(p_of_s, s, s_of_t)
-    Cinit = tensorInterp(CC, p, p_of_t)
+    s_of_t = torch_interp1d(s, t_of_s, t_init)
+    p_of_t = torch_interp1d(p_of_s, s, s_of_t)
+    Cinit = torch_interp1d(CC, p, p_of_t)
     g_init = torch.diff(Cinit, axis=0) / GAMMA / dt
     gf_init = torch.fft.rfft(g_init, dim=0, n=g_init.detach().shape[0] * 10) * dt
     freq_init = torch.fft.rfftfreq(g_init.detach().shape[0] * 10, d=dt)
@@ -414,7 +417,7 @@ def optiks(C,
             fig, axa = plt.subplots(1, C.shape[1], figsize=(15, 5))
             t_H = torch.arange(0, 50/dt, device=device) * dt
             H = torch.cat((torch.zeros((t_H.numel() - 1, 2), device=t_H.device),
-                        dt * tensorInterp(params['acoustic'][0], params['acoustic'][1], t_H.detach()[:-1])))
+                        dt * torch_interp1d(params['acoustic'][0], params['acoustic'][1], t_H.detach()[:-1])))
             pd = (H.shape[0] - g_init.T.shape[1]) // 2
             G = torch.nn.functional.pad(g_init[:, :-1].T, (pd, pd)).T
             H = torch.fft.fftshift(torch.fft.fft(torch.fft.ifftshift(H, dim=0), dim=0), dim=0)
@@ -455,7 +458,7 @@ def optiks(C,
                 axf[i].set_ylim((0, axf[0].get_ylim()[1]))
         plt.show()
 
-    Cinit = tensorInterp(CC, p, p_of_t)  # Get time optimal trajectory
+    Cinit = torch_interp1d(CC, p, p_of_t)  # Get time optimal trajectory
     ginit = torch.diff(Cinit, dim=0) / GAMMA / dt  # Get time optimal gradient
     s = torch.diff(g, dim=0) / dt  # Get optimized gradient slew-rate
     sinit = torch.diff(ginit, dim=0) / dt  # Get time optimal gradient slew-rate

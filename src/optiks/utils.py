@@ -70,54 +70,6 @@ def rosetteTraj(res, n1=7, n2=5, npoints=int(1e3)):
     return C
 
 
-def tensorInterp(y, x, xx):
-    """
-    Performs 1D linear interpolation of PyTorch tensors allowing backpropogation through any of the input parameters.
-    Interpolates from N points to M points over D axes. y, x, and xx must be on the same device.
-
-    Parameters
-    ----------
-    y : tensor
-        Dependent data to interpolate. Tensor size (N x D) or (N).
-    x : tensor
-        Original independent variable values. Tensor size (N).
-    xx : tensor
-        New independent variable values to interpolate at. Must lie within range of x. Tensor size (M).
-
-    Returns
-    -------
-    yy : tensor
-        Data y interpolated to points xx. Tensor size (M x D) or (M).
-
-    Notes
-    -----
-    (c) Matthew A. McCready 2024
-    """
-    device = y.device  # Get device to use
-    # get indices of elements in xx and their bounding elements in x
-    # col 0: contains indices of xx elements (1 to M)
-    # col 1: contains indices of elements in x surrounding element of xx from col 0
-    # rows 0 to M-1: left bounding element
-    # rows M to 2M-1: right bounding element
-    indices = torch.zeros((2 * xx.numel(), 2), dtype=int, device=device) - 1
-    indices[:xx.numel(), 0] = torch.arange(xx.numel())  # fill in col 0
-    indices[xx.numel():, 0] = torch.arange(xx.numel())
-    idx = torch.searchsorted(x.detach(), xx.detach(), right=True)  # get bounding element indices from xx
-    indices[:xx.numel(), 1] = idx - 1  # left bounding
-    indices[xx.numel():, 1] = idx  # right bounding
-    dx = x[indices[xx.numel():, 1]] - x[indices[:xx.numel(), 1]]  # step sizes
-    values = torch.zeros((2 * xx.numel()), device=device)  # calculate interpolation coefficients
-    values[:xx.numel()] = (x[indices[xx.numel():, 1]] - xx) / dx  # left coeff
-    values[xx.numel():] = (xx - x[indices[:xx.numel(), 1]]) / dx  # right coeff
-    # Do interpolation
-    if y.dim() > 1:  # pad empty dimension so Torch is happy
-        yy = values[:xx.numel()][:, np.newaxis] * y[indices[:xx.numel(), 1], :] + values[xx.numel():][:, np.newaxis] * y[indices[xx.numel():, 1], :]
-    else:
-        yy = values[:xx.numel()] * y[indices[:xx.numel(), 1]] + values[xx.numel():] * y[indices[xx.numel():, 1]]
-
-    return yy
-
-
 def get_free_gpu():
     """
     Determines index of GPU with the largest available memory and returns.

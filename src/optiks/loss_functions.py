@@ -1,8 +1,7 @@
 from functools import reduce
 import numpy as np
 import torch
-from optiks.utils import tensorInterp
-
+from optiks.interp import torch_interp1d
 
 def custom_loss(v, T, g, dt, smax, weights, rv=False, params=None):
     """
@@ -248,7 +247,7 @@ def freq_min(v, T, g, dt, smax, weights, rv=False, params=None):
 
 def acoustic_min(v, T, g, dt, smax, weights, rv=False, params=None):
     t = torch.arange(0, 50//dt, device=g.device) * dt
-    H = torch.cat((torch.zeros((t.numel() - 1, 2), device=g.device), dt * tensorInterp(params['acoustic'][0], params['acoustic'][1], t.detach()[:-1])))
+    H = torch.cat((torch.zeros((t.numel() - 1, 2), device=g.device), dt * torch_interp1d(params['acoustic'][0], params['acoustic'][1], t.detach()[:-1])))
     pd = (H.shape[0] - g.T.shape[1]) // 2
     G = torch.nn.functional.pad(g.T, (pd, pd)).T
     H = torch.fft.fftshift(torch.fft.fft(torch.fft.ifftshift(H[:-1], dim=0), dim=0), dim=0)
@@ -277,7 +276,7 @@ def acoustic_freq_min(v, T, g, dt, smax, weights, rv=False, params=None):
     H[freq < params['acousticfreq'][1][0], :] = params['acousticfreq'][0][0, :]
     H[freq > params['acousticfreq'][1][-1], :] = params['acousticfreq'][0][-1, :]
     freqidx = torch.logical_and(freq >= params['acousticfreq'][1][0], freq <= params['acousticfreq'][1][-1])
-    larf_intp = tensorInterp(params['acousticfreq'][0], params['acousticfreq'][1], freq[freqidx])
+    larf_intp = torch_interp1d(params['acousticfreq'][0], params['acousticfreq'][1], freq[freqidx])
     H[freqidx] = larf_intp
     A = torch.abs(H * G)
     term = dt * weights['acoustic'] * torch.norm(A)

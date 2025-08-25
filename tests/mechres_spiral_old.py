@@ -1,9 +1,8 @@
 import numpy as np
-import torch
-from optiks.optiks import optiks
-from optiks.loss_functions import time_bound, slew_lim, freq_min
-from optiks.utils import spiralTraj
-from optiks.options import HardwareOpts, DesignOpts, SolverOpts
+from optiks.old.optiks import optiks
+from optiks.old.loss_functions import *
+from optiks.old.utils import spiralTraj
+from optiks.old.options import *
 
 """
 This script designs a 3mm, 24cm FOV, R=2 spiral for the GE 3T UHP system minimizing power deposited in known mechanical
@@ -12,7 +11,7 @@ resonance bands, with a maximum duration of 16.5ms.
 
 # gpu device idx
 # device = get_free_gpu()
-device_idx = 5
+device_idx = 4
 device = torch.device(device_idx)
 
 # Designing desired trajectory (Spiral)=================================================================================
@@ -75,6 +74,6 @@ torch.save(
         s_usf=s_usf,
         g_last=g_last
     ), 
-    "data/mechres_spiral_new.pt",
+    "data/mechres_spiral_old.pt",
 )
 print("done.")
