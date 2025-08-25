@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-
+from typing import Optional
 import torch
 from numpy import ndarray
 
@@ -96,3 +96,6 @@ class SolverOpts:
     initsol: ndarray = None  # custom initial waveform solution - replaces time optimal solution (G/cm)
     lr: float = 1e-4  # initial learning rate for AdamW optimizer
     device: torch.device = torch.device("cpu")
+    us_factor: int = 10
+    save: bool = True
+    save_path: Optional[str] = "./optiks"

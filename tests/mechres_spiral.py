@@ -1,6 +1,7 @@
+import os
 import numpy as np
 import torch
-from optiks.optiks import optiks
+from optiks.optiks import optiks, InitSolve
 from optiks.loss_functions import time_bound, slew_lim, freq_min
 from optiks.utils import spiralTraj
 from optiks.options import HardwareOpts, DesignOpts, SolverOpts
@@ -52,10 +53,19 @@ des = DesignOpts(params=params, weights=weights)
 
 
 # Setting solver options================================================================================================
-sv = SolverOpts(ds=5e-5, maxiter=20000, count=50, device=device)
+save_path = "./data/spi_mechres"
+sv = SolverOpts(ds=5e-5, maxiter=20000, count=50, device=device, save=True, save_path=save_path)
+
+# save initial solve so we don't have to redo every time
+if os.path.exists(os.path.join(save_path, "init_solve.npz")):
+    init_solve = InitSolve(**np.load(os.path.join(save_path, "init_solve.npz")))
+    print(f"Loaded initial solution from {os.path.join(save_path, 'init_solve.npz')}")
+else:
+    init_solve = None
+
 
 # Designing gradient waveforms==========================================================================================
-output = optiks(C_m, hwopts=hw, dsopts=des, svopts=sv, plot=True)
+output = optiks(C_m, hwopts=hw, dsopts=des, svopts=sv, plot=True, init_solve=init_solve)
 C_v = output.Cnew
 t_sf = output.t
 g_sf = output.g

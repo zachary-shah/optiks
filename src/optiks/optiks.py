@@ -1,3 +1,4 @@
+import os
 import time
 from scipy.interpolate import CubicSpline, interp1d
 from scipy.integrate import cumulative_trapezoid
@@ -38,12 +39,22 @@ class OptiksOutput:
     sinit: torch.Tensor
     g_last: torch.Tensor
 
+@dataclass
+class InitSolve:
+    init: np.ndarray
+    phi: np.ndarray
+    s: np.ndarray
+    p_of_s: np.ndarray
+    CC: np.ndarray
+    p: np.ndarray
 
 def optiks(C: np.ndarray,
            hwopts=HardwareOpts(), 
            dsopts=DesignOpts(), 
            svopts=SolverOpts(),
            plot=True,
+           precision="float", # either double or float
+           init_solve: Optional[InitSolve] = None,
     ) -> OptiksOutput:
     """
     Given a k-space trajectory C(p), gradient and slew constraints, and a loss function definition. This function will
@@ -75,9 +86,15 @@ def optiks(C: np.ndarray,
     (c) Matthew McCready 2024.
     """
 
+    if precision == "float":
+        dtype = torch.float32
+    elif precision == "double":
+        dtype = torch.float64
+    else:
+        raise ValueError(f"Unknown precision: {precision}")
+
     # plotting
     if plot:
-        # lazy imports
         import matplotlib
         matplotlib.use("webagg")
         import matplotlib.pyplot as plt
@@ -98,59 +115,92 @@ def optiks(C: np.ndarray,
     derate = svopts.derate  # factor to derate initial (time optimal) solution v(s) by before optimizing
     initsol = svopts.initsol  # custom initial waveform solution - replaces time optimal solution (G/cm)
     environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'  # make GPU ID match that of nvitop
+    us_factor = svopts.us_factor # upsample factor for arclen parameterization
     device = svopts.device
-    
-    # Setting up arclength parameterization and initializing solution===================================================
+    lr = svopts.lr
+    save_path = svopts.save_path
+    save = svopts.save
 
-    # Represent the curve using spline with parametrization p
-    # Miki uses an arbitrary parametrization, but I've had better success with p as an initial arclength calculation
-    Cp = np.diff(C, axis=0)
-    Cp = np.vstack((Cp, Cp[-1]))
-    p = cumulative_trapezoid(np.linalg.norm(Cp, axis=1), axis=0, initial=0)
-    Lp = p[-1]
-    PP = CubicSpline(p, C)
-
-    # Upsample curve (x10) for gradient accuracy
-    dp = np.amin(np.diff(p)) / 10
-    p = np.arange(0, Lp, dp)
-    CC = PP(p)
-
-    # Find length of the curve
-    Cp = np.diff(CC, axis=0) / dp  # tangent curve as function of p
-    Cp = np.vstack((Cp, Cp[-1]))
-    s_of_p = cumulative_trapezoid(np.linalg.norm(Cp, axis=1), axis=0, initial=0) * dp  # arclength as function of p
-    L = s_of_p[-1]  # Length of curve
-
-    # Decide ds and compute st for the first point
-    stt0 = GAMMA * smax  # Always assumes the first point is max slew
-    st0 = stt0 * dt / 2  # Start at half the gradient for accuracy close to g=0
-    s0 = st0 * dt
-    if ds is None:
-        ds = s0 / 1.5  # Smaller step size for numerical accuracy
-
-    s = np.arange(0, L, ds)
-    s_half = np.arange(0, L, ds / 2)  # for RK integration
+    if save_path is None and save:
+        warnings.warn("No save path provided, not saving intermediates.")
+        save = False
+    elif save:
+        os.makedirs(save_path, exist_ok=True)
 
     if g0 is None:
-        g0 = 0  # assume start at gradient of 0
+            g0 = 0  # assume start at gradient of 0
 
-    p_of_s_half = interp1d(s_of_p, p, kind='cubic')(s_half)  # for RK integration
-    p_of_s = p_of_s_half[::2]
+    # determine if intermediates exist or were passed in 
+    if init_solve is not None:
+        print(f"Using provided initial solution.")
+        init = init_solve.init
+        phi = init_solve.phi
+        s=init_solve.s
+        p_of_s = init_solve.p_of_s
+        CC = init_solve.CC
+        p = init_solve.p
+    else:
+        # Setting up arclength parameterization and initializing solution===================================================
 
-    # Get initial solution (init) from time optimal method, as well as forbidden line curve (phi), and curvature (k)
-    # Use s0/5 for ds in init solution better accuracy
-    init, phi, k, s_half_init = initSolution(C, g0, gfin, gmax, smax, dt, s0/5, rv=rv)
-    s_half_init = np.arange(0, L, s0/10)
-    s_init = np.arange(0, L, s0/5)
+        # Represent the curve using spline with parametrization p
+        # Miki uses an arbitrary parametrization, but I've had better success with p as an initial arclength calculation
+        Cp = np.diff(C, axis=0)
+        Cp = np.vstack((Cp, Cp[-1]))
+        p = cumulative_trapezoid(np.linalg.norm(Cp, axis=1), axis=0, initial=0)
+        Lp = p[-1]
+        PP = CubicSpline(p, C)
 
-    # interpolate initial solution back to ds and ds_half sampling
-    st0 = init[0]  # fastest reachable initial point
-    init_interp = interp1d(s_init, init, kind='linear')(s[s <= s_init[-1]])  # interpolating to optimization sampling
-    init = np.hstack((init_interp, init[-1]*np.ones_like(s[s > s_init[-1]])))
-    phi_interp = interp1d(s_half_init, phi, kind='linear')(s_half[s_half <= s_half_init[-1]])
-    phi = np.hstack((phi_interp, phi[-1]*np.ones_like(s_half[s_half > s_half_init[-1]])))
-    phi = phi[::2] + 1e-6  # avoid numerical issues when inverting sigmoid
-    phi[0] = st0 + 1e-6  # Ensure initial value is used
+        # Upsample curve (x10) for gradient accuracy
+        dp = np.amin(np.diff(p)) / us_factor
+        p = np.arange(0, Lp, dp)
+        CC = PP(p)
+
+        # Find length of the curve
+        Cp = np.diff(CC, axis=0) / dp  # tangent curve as function of p
+        Cp = np.vstack((Cp, Cp[-1]))
+        s_of_p = cumulative_trapezoid(np.linalg.norm(Cp, axis=1), axis=0, initial=0) * dp  # arclength as function of p
+        L = s_of_p[-1]  # Length of curve
+
+        # Decide ds and compute st for the first point
+        stt0 = GAMMA * smax  # Always assumes the first point is max slew
+        st0 = stt0 * dt / 2  # Start at half the gradient for accuracy close to g=0
+        s0 = st0 * dt
+        if ds is None:
+            ds = s0 / 1.5  # Smaller step size for numerical accuracy
+
+        s = np.arange(0, L, ds)
+        s_half = np.arange(0, L, ds / 2)  # for RK integration
+
+        p_of_s_half = interp1d(s_of_p, p, kind='cubic')(s_half)  # for RK integration
+        p_of_s = p_of_s_half[::2]
+
+        # Get initial solution (init) from time optimal method, as well as forbidden line curve (phi), and curvature (k)
+        # Use s0/5 for ds in init solution better accuracy
+        init, phi, k, s_half_init = initSolution(C, g0, gfin, gmax, smax, dt, s0/5, rv=rv, us_factor=us_factor)
+        
+        s_half_init = np.arange(0, L, s0/10)
+        s_init = np.arange(0, L, s0/5)
+
+        # interpolate initial solution back to ds and ds_half sampling
+        st0 = init[0]  # fastest reachable initial point
+        init_interp = interp1d(s_init, init, kind='linear')(s[s <= s_init[-1]])  # interpolating to optimization sampling
+        init = np.hstack((init_interp, init[-1]*np.ones_like(s[s > s_init[-1]])))
+        phi_interp = interp1d(s_half_init, phi, kind='linear')(s_half[s_half <= s_half_init[-1]])
+        phi = np.hstack((phi_interp, phi[-1]*np.ones_like(s_half[s_half > s_half_init[-1]])))
+        phi = phi[::2] + 1e-6  # avoid numerical issues when inverting sigmoid
+        phi[0] = st0 + 1e-6  # Ensure initial value is used
+
+        if save:
+            np.savez(
+                os.path.join(save_path, "init_solve.npz"),
+                init=init,
+                phi=phi,
+                s=s,
+                p_of_s=p_of_s,
+                CC=CC,
+                p=p,
+            )
+            print(f"Saved initial solution to {os.path.join(save_path, 'init_solve.npz')}")
 
     # If a solution was passed as an argument use this as initial v(s)
     if not initsol is None:
@@ -193,12 +243,12 @@ def optiks(C: np.ndarray,
     # setting length of time-domain vector. Changing length with constant time sampling during optimization leads to
     # memory leak issue in PyTorch. Workaround is to choose a length s.t. sampling will always be smaller than dt.
     nscale = 1.5 * np.trapz(ds / init) if 'bound' not in params.keys() else 1.1 * params['bound']
-    tsamp = torch.arange(0, 1, dt / nscale, dtype=torch.float64, device=device)  # time sampling used later
+    tsamp = torch.arange(0, 1, dt / nscale, dtype=dtype, device=device)  # time sampling used later
     if tsamp.numel() % 2 != 0:
         tsamp = tsamp[:-1]
 
     # initializing optimizer, minimum loss, and loss storage
-    optimizer = torch.optim.AdamW([nu], lr=1e-4)
+    optimizer = torch.optim.AdamW([nu], lr=lr)
     lossvec = np.zeros(maxiter // count)
     lossterms = np.zeros((maxiter // count, len(params['terms'])))
     minloss = np.inf
@@ -234,6 +284,10 @@ def optiks(C: np.ndarray,
         if loss < minloss:
             minloss = loss
             best = nu
+        elif not torch.isfinite(loss):
+            print("Loss went infinite, terminating.")
+            break
+
         loss.backward()  # backprop
         optimizer.step()  # GD step
         if i % count == 0:  # record loss statistics
@@ -248,7 +302,7 @@ def optiks(C: np.ndarray,
     # Get g(t) in dt sampling for final iteration (g_last)
     t_of_s = torch.cumulative_trapezoid(1 / v * ds)
     t_of_s = torch.hstack((zro, t_of_s))  # Time as function of arc-length
-    t = torch.arange(0, 1, dt / t_of_s[-1].detach(), dtype=torch.float64, device=device) * t_of_s[-1]
+    t = torch.arange(0, 1, dt / t_of_s[-1].detach(), dtype=dtype, device=device) * t_of_s[-1]
     s_of_t = torch_interp1d(s, t_of_s, t)
     p_of_t = torch_interp1d(p_of_s, s, s_of_t)
     Cnew = torch_interp1d(CC, p, p_of_t)
@@ -258,7 +312,7 @@ def optiks(C: np.ndarray,
     v = phi * (1 / (1 + torch.exp(-best)))  # scale to velocity constraint 1
     t_of_s = torch.cumulative_trapezoid(1 / v * ds)
     t_of_s = torch.hstack((zro, t_of_s))  # Time as function of arc-length
-    t = torch.arange(0, 1, dt/t_of_s[-1].detach(), dtype=torch.float64, device=device) * t_of_s[-1]
+    t = torch.arange(0, 1, dt/t_of_s[-1].detach(), dtype=dtype, device=device) * t_of_s[-1]
     s_of_t = torch_interp1d(s, t_of_s, t)
     p_of_t = torch_interp1d(p_of_s, s, s_of_t)
     Cnew = torch_interp1d(CC, p, p_of_t)
@@ -270,7 +324,7 @@ def optiks(C: np.ndarray,
     init = torch.tensor(init, device=device)
     t_of_s = torch.cumulative_trapezoid(1 / init * ds)
     t_of_s = torch.hstack((zro, t_of_s))
-    t_init = torch.arange(0, 1, dt / t_of_s[-1].detach(), dtype=torch.float64, device=device) * t_of_s[-1]
+    t_init = torch.arange(0, 1, dt / t_of_s[-1].detach(), dtype=dtype, device=device) * t_of_s[-1]
     s_of_t = torch_interp1d(s, t_of_s, t_init)
     p_of_t = torch_interp1d(p_of_s, s, s_of_t)
     Cinit = torch_interp1d(CC, p, p_of_t)
@@ -278,7 +332,7 @@ def optiks(C: np.ndarray,
     gf_init = torch.fft.rfft(g_init, dim=0, n=g_init.detach().shape[0] * 10) * dt
     freq_init = torch.fft.rfftfreq(g_init.detach().shape[0] * 10, d=dt)
 
-    tlim = torch.maximum(t_init[-1], t[-1]).detach().cpu()
+    tlim = torch.maximum(t_init[-1], t[-1]).item()
 
     # Plotting results==================================================================================================
     if plot:
@@ -356,14 +410,14 @@ def optiks(C: np.ndarray,
             fig, axp = plt.subplots(1, 1, figsize=(7.5, 5))
             dtu = dt * 1e-3
             Smin = params['pns'][1] / params['pns'][3]
-            tp = torch.arange(0, dtu * (g_init.shape[0] - 2), dtu, dtype=torch.float64, device=device)
+            tp = torch.arange(0, dtu * (g_init.shape[0] - 2), dtu, dtype=dtype, device=device)
             h = torch.flip(dtu * params['pns'][2] / (params['pns'][2] + tp) ** 2 / Smin, dims=[0])
             S = torch.diff(g_init.T * 0.01, dim=1)[:, np.newaxis, :] / dtu
             stim_all = torch.nn.functional.conv1d(S, h[np.newaxis, np.newaxis, :], padding=S.shape[2])[:, :,
                     :S.shape[2]]
             stim_all = torch.norm(stim_all.squeeze(), dim=0)
             axp.plot(t_init[:-2].detach().cpu(), stim_all.detach().cpu(), label="unsafe")
-            tp = torch.arange(0, dtu * (g.shape[0] - 2), dtu, dtype=torch.float64, device=device)
+            tp = torch.arange(0, dtu * (g.shape[0] - 2), dtu, dtype=dtype, device=device)
             h = torch.flip(dtu * params['pns'][2] / (params['pns'][2] + tp) ** 2 / Smin, dims=[0])
             S = torch.diff(g.T * 0.01, dim=1)[:, np.newaxis, :] / dtu
             stim_all = torch.nn.functional.conv1d(S, h[np.newaxis, np.newaxis, :], padding=S.shape[2])[:, :,
@@ -464,6 +518,19 @@ def optiks(C: np.ndarray,
     s = torch.diff(g, dim=0) / dt  # Get optimized gradient slew-rate
     sinit = torch.diff(ginit, dim=0) / dt  # Get time optimal gradient slew-rate
 
+    if save:
+        torch.save(
+            dict(
+                Cnew=Cnew.detach().cpu(),
+                t=t.detach().cpu(),
+                g=g.detach().cpu()
+                s=s.detach().cpu(),
+                ginit = ginit.detach().cpu(),
+                sinit = sinit.detach().cpu(),
+            ),
+            os.path.join(save_path, "opt.pt"),
+        )
+
     return OptiksOutput(
         Cnew = Cnew.detach().cpu(),
         t = t.detach().cpu(),
@@ -483,7 +550,10 @@ def initSolution(
         smax: float = 15, 
         dt: float = 4e-3, 
         ds: Optional[float] = None, 
-        rv: bool = False) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        rv: bool = False,
+        interp_kind: str = 'cubic',
+        us_factor: int = 10,
+        verbose: bool = True) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Compute the velocity in arclength to meet gradient and slew constraints.
 
@@ -537,7 +607,7 @@ def initSolution(
     PP = CubicSpline(p, C)
 
     # Interpolate curve for gradient accuracy
-    dp = np.amin(np.diff(p)) / 10
+    dp = np.amin(np.diff(p)) / us_factor
     p = np.arange(0, Lp, dp)
     CC = PP(p)
 
@@ -557,7 +627,7 @@ def initSolution(
     s = np.arange(0, L, ds)
     s_half = np.arange(0, L, ds / 2)
 
-    p_of_s_half = interp1d(s_of_p, p, kind='cubic')(s_half)
+    p_of_s_half = interp1d(s_of_p, p, kind=interp_kind)(s_half)
     p_of_s = p_of_s_half[::2]
 
     sta = np.zeros_like(s, dtype=float)
@@ -570,7 +640,8 @@ def initSolution(
     else:
         k = np.hstack((k, k[-1], k[-1]))
 
-    print('Solve ODE forward...')
+    if verbose:
+        print('Solve ODE forward...')
 
     # Solve ODE forward
     start = time.time()
@@ -583,9 +654,10 @@ def initSolution(
             if np.isnan(tmpst):
                 sta[n - 1] = phi[2 * n - 2]
             else:
-                sta[n - 1] = min(tmpst, phi[2 * n - 2])
+                sta[n - 1] = tmpst if tmpst < phi[2 * n - 2] else phi[2 * n - 2]
 
-        print("Time elapsed: ", time.time() - start)
+        if verbose:
+            print("Time elapsed: ", time.time() - start)
         stb = np.zeros_like(s)
 
         if gfin is None:
@@ -594,7 +666,8 @@ def initSolution(
             stb[-1] = min(max(gfin * GAMMA, st0), GAMMA * gmax)
 
         # Solve ODE backwards
-        print('Solve ODE backwards...')
+        if verbose:
+            print('Solve ODE backwards...')
         for n in range(len(s) - 1, 0, -1):
             dstds = RungeKutte(ds, stb[n], Cprime[2 * n:max(2 * n - 3, 0) or None:-1], k[2 * n:max(2 * n - 3, 0) or None:-1], smax, rv=rv)
 
@@ -603,8 +676,9 @@ def initSolution(
             if np.isnan(tmpst):
                 stb[n - 1] = phi[n * 2 - 2]
             else:
-                stb[n - 1] = min(tmpst, phi[n * 2 - 2])
-        print("Total time elapsed: ", time.time() - start, "\n")
+                stb[n - 1] = tmpst if tmpst < phi[n * 2 - 2] else phi[n * 2 - 2]
+        if verbose:
+            print("Total time elapsed: ", time.time() - start, "\n")
 
     # Take the minimum of the curves
     st = np.min([sta, stb], axis=0)
