@@ -138,7 +138,7 @@ def pns_lim(v, T, g, dt, smax, weights, rv=False, params=None):
     """
     dtu = dt * 1e-3
     Smin = params['pns'][1] / params['pns'][3]
-    tp = torch.arange(0, dtu * (g.shape[0] - 2) + dtu / 10, dtu, dtype=torch.float64, device=g.device)
+    tp = torch.arange(0, dtu * (g.shape[0] - 2) + dtu / 10, dtu, dtype=g.dtype, device=g.device)
 
     # Fourier approach
     H = torch.cat((torch.zeros_like(tp), dtu * params['pns'][2] / (params['pns'][2] + tp) ** 2 / Smin))

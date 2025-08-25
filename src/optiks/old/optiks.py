@@ -201,7 +201,7 @@ def optiks(C,
     best = nu
 
     # Performing gradient descent for maxiter steps=====================================================================
-    pbar = tqdm(total=maxiter, desc="Optiks", leave=False)
+    pbar = tqdm(total=maxiter, desc="Optiks", leave=True)
     for i in range(maxiter):
         optimizer.zero_grad()
 
@@ -227,18 +227,19 @@ def optiks(C,
             g = torch.vstack((g0, g, gfin))  # pad initial and final value constraints
 
         loss, terms = custom_loss(v, t_of_s[-1], g, dt_temp, smax, weights, rv=rv, params=params)  # calculate loss
-        if loss < minloss:
-            minloss = loss
-            best = nu
+        
         loss.backward()  # backprop
         optimizer.step()  # GD step
         if i % count == 0:  # record loss statistics
             lossvec[i // count] = loss.detach().cpu().numpy()
             lossterms[i // count] = torch.tensor(terms).detach().cpu()
-
-        pbar.update(1)
-        pbar.set_postfix(loss=loss.item())
-
+            if loss < minloss:
+                minloss = loss
+                best = nu
+            pbar.update(count)
+            pbar.set_postfix(loss=loss.item())
+    pbar.close()
+    
     # Collect waveforms=================================================================================================
 
     # Get g(t) in dt sampling for final iteration (g_last)
