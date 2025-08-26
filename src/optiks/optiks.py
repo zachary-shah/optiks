@@ -11,7 +11,7 @@ from tqdm import tqdm
 from dataclasses import dataclass
 from optiks.options import HardwareOpts, DesignOpts, SolverOpts
 from optiks.interp import torch_interp1d
-from optiks.loss_functions import custom_loss
+from optiks.loss_functions import custom_loss, slew_lim
 from optiks.consts import GAMMA
 
 @dataclass
@@ -270,8 +270,13 @@ def optiks(C: np.ndarray,
 
     # put things on device
     if 'bound' in params.keys() and isinstance(params['bound'], (int, float)):
-        params['bound'] = torch.tensor([params['bound']], device=device)
-
+        params['bound'] = torch.tensor([params['bound']], dtype=dtype, device=device)
+    if slew_lim in params['terms']:
+        if 'slew' not in params.keys():
+            params['slew'] = torch.tensor(0.0002, dtype=dtype, device=device)
+    for k, w in weights.items():
+        weights[k] = torch.tensor(w, dtype=dtype, device=device)
+    
     def train_step(nu):
         optimizer.zero_grad()
 
@@ -296,23 +301,30 @@ def optiks(C: np.ndarray,
         else:
             g = torch.vstack((g0, g, gfin))  # pad initial and final value constraints
 
-        loss, terms = custom_loss(v, t_of_s[-1], g, dt_temp, smax, weights, rv=rv, params=params)  # calculate loss
-
-        loss.backward()  # backprop
-        optimizer.step()  # GD step
-
-        return loss, terms, nu
+        return v, t_of_s, g, dt_temp
 
     if compile:
         print(f"Compiling optimizer...")
         train_step_opt = torch.compile(train_step, mode="reduce-overhead")
+        optimizer_step_opt = torch.compile(optimizer.step, mode="reduce-overhead")
     else:
         train_step_opt = train_step
-    
+        optimizer_step_opt = optimizer.step
+
     # Performing gradient descent for maxiter steps=====================================================================
     pbar = tqdm(total=maxiter, desc="Optiks", leave=True)
     for i in range(maxiter):
-        loss, terms, nu = train_step_opt(nu)
+
+        # compiled train step
+        v, t_of_s, g, dt_temp = train_step_opt(nu)
+        
+        # can't compile loss because of complex operations
+        loss, terms = custom_loss(v, t_of_s[-1], g, dt_temp, smax, weights, rv=rv, params=params)  # calculate loss
+
+        loss.backward()
+        
+        # compiled optimizer update step
+        optimizer_step_opt()
 
         if i % count == 0:  # record loss statistics
             if loss < minloss:

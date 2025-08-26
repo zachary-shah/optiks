@@ -14,7 +14,7 @@ resonance bands, with a maximum duration of 16.5ms.
 # gpu device idx
 # device = get_free_gpu()
 device_idx = 3
-cache_init = False
+cache_init = True
 
 device = torch.device(device_idx)
 
@@ -75,7 +75,7 @@ des = DesignOpts(params=params, weights=weights)
 
 # Setting solver options================================================================================================
 save_path = "./data/spi_mechres_magnus"
-sv = SolverOpts(ds=5e-5, maxiter=10000, count=50, device=device, save=True, save_path=save_path) # TODO: 20k step
+sv = SolverOpts(ds=5e-5, maxiter=10000, count=50, device=device, compile=True, save=True, save_path=save_path)
 
 # save initial solve so we don't have to redo every time
 if cache_init and os.path.exists(os.path.join(save_path, "optiks_init_solve.npz")):

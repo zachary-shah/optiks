@@ -111,7 +111,7 @@ def slew_lim(v, T, g, dt, smax, weights, rv=False, params=None):
         sr = torch.norm(torch.diff(g, dim=0), dim=1) / dt
     else:
         sr = torch.abs(torch.diff(g, dim=0) / dt)
-    dx = torch.tensor(0.0002) if 'slew' not in params.keys() else params['slew']
+    dx = params['slew']
     sr[:3] = sr[:3] + smax/4
     term = weights['slew'] * (-torch.sum(torch.log(torch.relu(smax - sr[sr < (smax - dx)])))
                         + torch.sum(sr[sr >= (smax - dx)] / dx - torch.log(dx) + (1 - smax / dx))) / sr.numel()

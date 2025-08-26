@@ -99,4 +99,4 @@ class SolverOpts:
     us_factor: int = 10
     save: bool = False
     save_path: Optional[str] = "./optiks"
-    compile: bool = False # compile solver for speed (may take time initially)
+    compile: bool = True # torch.compile() on solver for speed (may take time initially)
