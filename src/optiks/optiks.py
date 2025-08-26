@@ -11,7 +11,7 @@ from tqdm import tqdm
 from dataclasses import dataclass
 from optiks.options import HardwareOpts, DesignOpts, SolverOpts
 from optiks.interp import torch_interp1d
-from optiks.loss_functions import custom_loss, slew_lim
+from optiks.loss_functions import custom_loss, slew_lim, jerk_lim
 from optiks.consts import GAMMA
 
 @dataclass
@@ -53,7 +53,7 @@ def optiks(C: np.ndarray,
            dsopts=DesignOpts(), 
            svopts=SolverOpts(),
            plot=True,
-           precision="float", # either double or float
+           precision="double", # either double or float
            init_solve: Optional[InitSolve] = None,
     ) -> OptiksOutput:
     """
@@ -170,6 +170,7 @@ def optiks(C: np.ndarray,
         s0 = st0 * dt
         if ds is None:
             ds = s0 / 1.5  # Smaller step size for numerical accuracy
+            print(f"Using ds={ds:0.2e}")
 
         s = np.arange(0, L, ds)
         s_half = np.arange(0, L, ds / 2)  # for RK integration
@@ -179,7 +180,7 @@ def optiks(C: np.ndarray,
 
         # Get initial solution (init) from time optimal method, as well as forbidden line curve (phi), and curvature (k)
         # Use s0/5 for ds in init solution better accuracy
-        init, phi, k, s_half_init = initSolution(C, g0, gfin, gmax, smax, dt, s0/5, rv=rv, us_factor=us_factor)
+        init, phi, _, _, _ = initSolution(C, g0, gfin, gmax, smax, dt, s0/5, rv=rv)
         
         s_half_init = np.arange(0, L, s0/10)
         s_init = np.arange(0, L, s0/5)
@@ -271,9 +272,24 @@ def optiks(C: np.ndarray,
     # put things on device
     if 'bound' in params.keys() and isinstance(params['bound'], (int, float)):
         params['bound'] = torch.tensor([params['bound']], dtype=dtype, device=device)
+    # if time_bound in params['terms']:
+    if 'bound_delta' in params.keys() and isinstance(params['bound_delta'], (int, float)):
+        params['bound_delta'] = torch.tensor([params['bound_delta']], dtype=dtype, device=device)
+    if jerk_lim in params['terms']:
+        if 'jmax_delta' not in params.keys():
+            params['jmax_delta'] = torch.tensor(0.0002, dtype=dtype, device=device)
+        elif 'jmax_delta' in params.keys() and isinstance(params['jmax_delta'], (int, float)):
+            params['jmax_delta'] = torch.tensor([params['jmax_delta']], dtype=dtype, device=device)
+        if 'jmax' not in params.keys():
+            params['jmax'] = torch.tensor(30, dtype=dtype, device=device)
+        elif 'jmax' in params.keys() and isinstance(params['jmax'], (int, float)):
+            params['jmax'] = torch.tensor([params['jmax']], dtype=dtype, device=device)
     if slew_lim in params['terms']:
         if 'slew' not in params.keys():
             params['slew'] = torch.tensor(0.0002, dtype=dtype, device=device)
+        elif isinstance(params['slew'], (int, float)):
+            params['slew'] = torch.tensor(params['slew'], dtype=dtype, device=device)
+
     for k, w in weights.items():
         weights[k] = torch.tensor(w, dtype=dtype, device=device)
     
@@ -604,7 +620,6 @@ def initSolution(
         ds: Optional[float] = None, 
         rv: bool = False,
         interp_kind: str = 'cubic',
-        us_factor: int = 10,
         verbose: bool = True) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Compute the velocity in arclength to meet gradient and slew constraints.
@@ -659,7 +674,7 @@ def initSolution(
     PP = CubicSpline(p, C)
 
     # Interpolate curve for gradient accuracy
-    dp = np.amin(np.diff(p)) / us_factor
+    dp = np.amin(np.diff(p)) / 10
     p = np.arange(0, Lp, dp)
     CC = PP(p)
 
@@ -674,7 +689,7 @@ def initSolution(
     st0 = stt0 * dt / 6  # Start at fraction of the gradient for accuracy close to g=0
     s0 = 3 * st0 * dt
     if ds is None:
-        ds = s0 / 1.5  # Smaller step size for numerical accuracy
+        ds = s0 / 4.0  # Smaller step size for numerical accuracy
 
     s = np.arange(0, L, ds)
     s_half = np.arange(0, L, ds / 2)
@@ -752,7 +767,7 @@ def initSolution(
         print('WARNING: MAXIMUM SLEW RATE VIOLATED IN TIME-OPTIMAL SOLUTION')
         print('LIMIT: ', smax, '\nMAX REACHED: ', np.amax(s), '\n')
 
-    return st, phi, k, s_half
+    return st, phi, C, g, s
 
 
 def sdotMax(

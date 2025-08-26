@@ -87,8 +87,24 @@ def time_bound(v, T, g, dt, smax, weights, rv=False, params=None):
     either increase the derate factor or allow for more time. The maximum time may be violated during gradient descent
     in some cases. If this occurs try running again with a smaller learning rate or increase weights['time'].
     """
-    term = -weights['time'] * torch.log(torch.relu(params['bound'] - T))
+
+    B = params['bound']
+    W = weights['time']
+    
+    # try leaky log barrier
+    if 'bound_delta' in params:
+        
+        dx = params['bound_delta']
+
+        if (T < B - dx):
+            term = -W * torch.log(torch.relu(B - T))
+        else:
+            term = W * ((T - (B - dx)) / dx - torch.log(dx))
+    else:
+        term = -W * torch.log(torch.relu(B - T))
+
     return term
+    
 
 
 def slew_lim(v, T, g, dt, smax, weights, rv=False, params=None):
@@ -115,6 +131,35 @@ def slew_lim(v, T, g, dt, smax, weights, rv=False, params=None):
     sr[:3] = sr[:3] + smax/4
     term = weights['slew'] * (-torch.sum(torch.log(torch.relu(smax - sr[sr < (smax - dx)])))
                         + torch.sum(sr[sr >= (smax - dx)] / dx - torch.log(dx) + (1 - smax / dx))) / sr.numel()
+    return term
+
+
+def jerk_lim(v, T, g, dt, smax, weights, rv=False, params=None):
+    """
+    Loss function on the change in slew (jerk) term.
+
+    Constrains the slew-rate of gradient waveform to a maximum value by use of the "leaky" log-barrier function (README)
+
+    Parameters
+    ----------
+    smax : float
+        Maximum allowed slew-rate [G/cm/ms]
+    weights : dict
+        Uses key 'slew'
+    params : dict, optional
+        Uses key 'slew', entirely optional to include. Has only one value: delta_s, the delta parameter used for the
+        "leaky" log-barrier function (default 2e-4).
+    """
+    s = torch.diff(g, dim=0) / dt
+    if not rv:
+        jr = torch.norm(torch.diff(s, dim=0), dim=1) / (dt)
+    else:
+        jr = torch.abs(torch.diff(s, dim=0)) / (dt)
+    dx = params['jmax_delta']
+    jmax = params['jmax']
+    term = weights['jerk'] * (-torch.sum(torch.log(torch.relu(jmax - jr[jr < (jmax - dx)])))
+                        + torch.sum(jr[jr >= (jmax - dx)] / dx - torch.log(dx) + (1 - jmax / dx))) / jr.numel()
+    
     return term
 
 
