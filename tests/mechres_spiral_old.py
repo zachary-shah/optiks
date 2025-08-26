@@ -31,7 +31,7 @@ hw = HardwareOpts(
 )
 
 # Setting design options================================================================================================
-Pthresh = 100*0.9
+Pthresh = 100*0.95
 if sys == "UHP":
     r = 26.5
     c = 359e-6
@@ -46,28 +46,31 @@ elif sys == "PREMIER":
     alpha = 0.333
     hw.smax = 15
 elif sys == "MAGNUS":
-    fedges = [[0.590, 0.972], [1.1, 1.4], [1.6, 1.8], [5, np.inf]]  # Premier with band-limiting
+    fedges = [[0.590, 0.972], [1.1, 1.4], [1.6, 1.8]] #, [5, np.inf]]  # Premier with band-limiting
     r = 52.2
     c = 611e-6
     alpha = 0.324
     hw.gmax = 10
-    hw.smax = 45
+    hw.smax = 60
 else:
     raise NotImplementedError(f"System {sys} not known.")
-params = {'terms': [time_bound, slew_lim, pns_lim, freq_min],
-          'bound': 40,
-          'pns': [Pthresh, r, c, alpha],
-          'frequency': fedges}
-weights = {'time': 1e0,
-           'slew': 1e1,
-           'pns': 5e1,
-           'frequency': 4e3}
+params = {
+    'terms': [time_bound, slew_lim, freq_min],
+    'bound': 9,
+    'pns': [Pthresh, r, c, alpha],
+    'frequency': fedges,
+}
+weights = {
+    'time': 1e0,
+    'slew': 1e1,
+    'frequency': 4e3,
+}
 
 des = DesignOpts(params=params, weights=weights)
 
 
 # Setting solver options================================================================================================
-sv = SolverOpts(ds=5e-5, maxiter=20000, count=50, device=device)
+sv = SolverOpts(ds=5e-5, maxiter=10000, count=50, device=device) # TODO: 20k step
 
 # Designing gradient waveforms==========================================================================================
 output = optiks(C_m, hwopts=hw, dsopts=des, svopts=sv, plot=True)

@@ -53,7 +53,7 @@ def optiks(C: np.ndarray,
            dsopts=DesignOpts(), 
            svopts=SolverOpts(),
            plot=True,
-           precision="double", # either double or float
+           precision="float", # either double or float
            init_solve: Optional[InitSolve] = None,
     ) -> OptiksOutput:
     """
@@ -122,6 +122,7 @@ def optiks(C: np.ndarray,
     lr = svopts.lr
     save_path = svopts.save_path
     save = svopts.save
+    compile = svopts.compile # compile solver
 
     if save_path is None and save:
         warnings.warn("No save path provided, not saving intermediates.")
@@ -194,7 +195,7 @@ def optiks(C: np.ndarray,
 
         if save:
             np.savez(
-                os.path.join(save_path, "init_solve.npz"),
+                os.path.join(save_path, "optiks_init_solve.npz"),
                 init=init,
                 phi=phi,
                 s=s,
@@ -202,7 +203,7 @@ def optiks(C: np.ndarray,
                 CC=CC,
                 p=p,
             )
-            print(f"Saved initial solution to {os.path.join(save_path, 'init_solve.npz')}")
+            print(f"Saved initial solution to {os.path.join(save_path, 'optiks_init_solve.npz')}")
 
     # If a solution was passed as an argument use this as initial v(s)
     if initsol is not None:
@@ -267,13 +268,11 @@ def optiks(C: np.ndarray,
     minloss = np.inf
     best = nu.detach().clone()
 
-    # compile step
-    print(f"Compiling optimizer...")
-    # compiled_optimizer_step = torch.compile(optimizer.step)
+    # put things on device
+    if 'bound' in params.keys() and isinstance(params['bound'], (int, float)):
+        params['bound'] = torch.tensor([params['bound']], device=device)
 
-    # Performing gradient descent for maxiter steps=====================================================================
-    pbar = tqdm(total=maxiter, desc="Optiks", leave=False)
-    for i in range(maxiter):
+    def train_step(nu):
         optimizer.zero_grad()
 
         # Address velocity constraint
@@ -283,7 +282,7 @@ def optiks(C: np.ndarray,
         t_of_s = torch.cumulative_trapezoid(1 / v * ds)
         t_of_s = torch.hstack((zro, t_of_s))  # Time as function of arc-length
         t = tsamp * t_of_s[-1]  # evenly spaced time
-        dt_temp = t[1].item() #.detach().cpu()  # time sampling on this iteration. TODO: why detach?
+        dt_temp = t[1]
         # Note: use of a set time sampling varies size of t each iteration. This causes memory leakage due to some
         # internal PyTorch error. Solution not found, so sampling is allowed to change and length of t is held constant.
         s_of_t = torch_interp1d(s, t_of_s, t)  # arc-length as function of evenly spaced time
@@ -301,7 +300,19 @@ def optiks(C: np.ndarray,
 
         loss.backward()  # backprop
         optimizer.step()  # GD step
-        # compiled_optimizer_step()
+
+        return loss, terms, nu
+
+    if compile:
+        print(f"Compiling optimizer...")
+        train_step_opt = torch.compile(train_step, mode="reduce-overhead")
+    else:
+        train_step_opt = train_step
+    
+    # Performing gradient descent for maxiter steps=====================================================================
+    pbar = tqdm(total=maxiter, desc="Optiks", leave=True)
+    for i in range(maxiter):
+        loss, terms, nu = train_step_opt(nu)
 
         if i % count == 0:  # record loss statistics
             if loss < minloss:
@@ -315,10 +326,12 @@ def optiks(C: np.ndarray,
             lossterms[i // count] = torch.tensor(terms).cpu()
             pbar.update(count)
             pbar.set_postfix(loss=loss.item())
+    pbar.close()
 
     # Collect waveforms=================================================================================================
 
     # Get g(t) in dt sampling for final iteration (g_last)
+    v = phi * torch.sigmoid(nu) # scale to velocity constraint 1
     t_of_s = torch.cumulative_trapezoid(1 / v * ds)
     t_of_s = torch.hstack((zro, t_of_s))  # Time as function of arc-length
     t = torch.arange(0, 1, dt / t_of_s[-1].detach(), dtype=dtype, device=device) * t_of_s[-1]
@@ -340,7 +353,6 @@ def optiks(C: np.ndarray,
     freq = torch.fft.rfftfreq(g.detach().shape[0] * 10, d=dt)
     ktrue = GAMMA * cumulative_trapezoid(g.detach().cpu().numpy(), axis=0, initial=0) * dt
 
-    init = torch.tensor(init, device=device)
     t_of_s = torch.cumulative_trapezoid(1 / init * ds)
     t_of_s = torch.hstack((zro, t_of_s))
     t_init = torch.arange(0, 1, dt / t_of_s[-1].detach(), dtype=dtype, device=device) * t_of_s[-1]
@@ -382,6 +394,13 @@ def optiks(C: np.ndarray,
             ax[2, 0].plot(t[:-2].detach().cpu(), sr[:, i], label=dir[i])
         if not rv:
             ax[2, 0].plot(t[:-2].detach().cpu(), np.linalg.norm(sr, axis=1), label="Mag")
+
+        # add sr for opt
+        Cinit = torch_interp1d(CC, p, p_of_t)  # Get time optimal trajectory
+        ginit = torch.diff(Cinit, dim=0) / GAMMA / dt  # Get time optimal gradient
+        sinit = torch.diff(ginit, dim=0) / dt  # Get time optimal gradient slew-rate
+        ax[2, 0].plot(t[:sinit.shape[0]].detach().cpu(), sinit.norm(dim=-1).detach().cpu(), label="TimeOptimal")
+
         ax[2, 0].set_xlabel('Time (ms)')
         ax[2, 0].set_ylabel('Slew-Rate (G/cm/ms)')
         ax[2, 0].legend()
@@ -432,13 +451,15 @@ def optiks(C: np.ndarray,
             tp = torch.arange(0, dtu * (g_init.shape[0] - 2), dtu, dtype=dtype, device=device)
             h = torch.flip(dtu * params['pns'][2] / (params['pns'][2] + tp) ** 2 / Smin, dims=[0])
             S = torch.diff(g_init.T * 0.01, dim=1)[:, np.newaxis, :] / dtu
-            stim_all = torch.nn.functional.conv1d(S, h[np.newaxis, np.newaxis, :], padding=S.shape[2])[:, :,
-                    :S.shape[2]]
+            S = S.to(dtype)
+            h = h.to(dtype)
+            stim_all = torch.nn.functional.conv1d(S, h[np.newaxis, np.newaxis, :], padding=S.shape[2])[:, :,:S.shape[2]]
             stim_all = torch.norm(stim_all.squeeze(), dim=0)
             axp.plot(t_init[:-2].detach().cpu(), stim_all.detach().cpu(), label="unsafe")
             tp = torch.arange(0, dtu * (g.shape[0] - 2), dtu, dtype=dtype, device=device)
             h = torch.flip(dtu * params['pns'][2] / (params['pns'][2] + tp) ** 2 / Smin, dims=[0])
             S = torch.diff(g.T * 0.01, dim=1)[:, np.newaxis, :] / dtu
+            S = S.to(dtype)
             stim_all = torch.nn.functional.conv1d(S, h[np.newaxis, np.newaxis, :], padding=S.shape[2])[:, :,
                     :S.shape[2]]
             stim_all = torch.norm(stim_all.squeeze(), dim=0)

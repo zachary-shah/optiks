@@ -14,7 +14,7 @@ resonance bands, with a maximum duration of 16.5ms.
 # gpu device idx
 # device = get_free_gpu()
 device_idx = 3
-cache_init = True
+cache_init = False
 
 device = torch.device(device_idx)
 
@@ -35,7 +35,7 @@ hw = HardwareOpts(
 )
 
 # Setting design options================================================================================================
-Pthresh = 100*0.9
+Pthresh = 100*0.95
 if sys == "UHP":
     r = 26.5
     c = 359e-6
@@ -55,31 +55,32 @@ elif sys == "MAGNUS":
     c = 611e-6
     alpha = 0.324
     hw.gmax = 10
-    hw.smax = 45
+    hw.smax = 60
 else:
     raise NotImplementedError(f"System {sys} not known.")
 params = {
-    'terms': [time_bound, slew_lim, pns_lim, freq_min],
-    'bound': 10,
+    'terms': [time_bound, slew_lim, freq_min],
+    'bound': 9,
     'pns': [Pthresh, r, c, alpha],
     'frequency': fedges,
 }
-weights = {'time': 1e0,
-           'slew': 1e1,
-           'pns': 5e1,
-           'frequency': 4e3}
+weights = {
+    'time': 1e0,
+    'slew': 1e1,
+    'frequency': 4e3,
+}
 
 des = DesignOpts(params=params, weights=weights)
 
 
 # Setting solver options================================================================================================
 save_path = "./data/spi_mechres_magnus"
-sv = SolverOpts(ds=5e-5, maxiter=20000, count=50, device=device, save=True, save_path=save_path)
+sv = SolverOpts(ds=5e-5, maxiter=10000, count=50, device=device, save=True, save_path=save_path) # TODO: 20k step
 
 # save initial solve so we don't have to redo every time
-if cache_init and os.path.exists(os.path.join(save_path, "init_solve.npz")):
-    init_solve = InitSolve(**np.load(os.path.join(save_path, "init_solve.npz")))
-    print(f"Loaded initial solution from {os.path.join(save_path, 'init_solve.npz')}")
+if cache_init and os.path.exists(os.path.join(save_path, "optiks_init_solve.npz")):
+    init_solve = InitSolve(**np.load(os.path.join(save_path, "optiks_init_solve.npz")))
+    print(f"Loaded initial solution from {os.path.join(save_path, 'optiks_init_solve.npz')}")
 else:
     init_solve = None
 
@@ -105,6 +106,6 @@ torch.save(
         s_usf=s_usf,
         g_last=g_last
     ), 
-    "data/mechres_spiral_magnus.pt",
+    "data/mechres_spiral_new.pt",
 )
 print("done.")

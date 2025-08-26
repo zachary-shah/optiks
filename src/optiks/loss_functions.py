@@ -46,7 +46,7 @@ def custom_loss(v, T, g, dt, smax, weights, rv=False, params=None):
     for i, func in enumerate(params['terms']):
         t_ = func(v, T, g, dt, smax, weights, rv, params)
         tot += t_
-        terms[i] = t_.item()
+        terms[i] = t_
     return tot, terms
 
 
@@ -140,7 +140,7 @@ def pns_lim(v, T, g, dt, smax, weights, rv=False, params=None):
     """
     dtu = dt * 1e-3
     Smin = params['pns'][1] / params['pns'][3]
-    tp = torch.arange(0, dtu * (g.shape[0] - 2) + dtu / 10, dtu, dtype=torch.float64, device=g.device)
+    tp = torch.arange(0, (g.shape[0] - 1), dtype=g.dtype, device=g.device) * dtu
 
     # Fourier approach
     H = torch.cat((torch.zeros_like(tp), dtu * params['pns'][2] / (params['pns'][2] + tp) ** 2 / Smin))
@@ -224,7 +224,7 @@ def safemodel_lim(v, T, g, dt, smax, weights, rv=False, params=None):
     stim = torch.sqrt(stim)
     dp = torch.tensor(0.00005) if len(params['safemodel']) == 2 else params['safemodel'][2]
     term = weights['pns'] * (torch.sum(torch.relu(-torch.log(params['safemodel'][0] - stim[stim < (params['safemodel'][0] - dp)]) + 0.7))
-        + torch.sum(stim[stim >= (params['safemodel'][0] - dp)] / dp - torch.log(dp) + (1 - params['safemodel'][0] / dp))) / stim.detach().numel()
+        + torch.sum(stim[stim >= (params['safemodel'][0] - dp)] / dp - torch.log(dp) + (1 - params['safemodel'][0] / dp))) / stim.numel()
     return term
 
 
@@ -243,7 +243,7 @@ def freq_min(v, T, g, dt, smax, weights, rv=False, params=None):
     gf = dt * torch.fft.rfft(g, n=nf, dim=0)
 
     with torch.no_grad():
-        freq = torch.fft.rfftfreq(nf, d=dt).to(g.device)
+        freq = torch.fft.rfftfreq(nf, d=1.0).to(g.device) / dt
         freq_bins = params['frequency']
         idx = torch.argwhere(
             reduce(

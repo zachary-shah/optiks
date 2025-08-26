@@ -198,7 +198,7 @@ def optiks(C,
     lossvec = np.zeros(maxiter // count)
     lossterms = np.zeros((maxiter // count, len(params['terms'])))
     minloss = np.inf
-    best = nu
+    best = nu.detach().clone()
 
     # Performing gradient descent for maxiter steps=====================================================================
     pbar = tqdm(total=maxiter, desc="Optiks", leave=True)
@@ -228,14 +228,17 @@ def optiks(C,
 
         loss, terms = custom_loss(v, t_of_s[-1], g, dt_temp, smax, weights, rv=rv, params=params)  # calculate loss
         
+        if not torch.isfinite(loss):
+            print("Loss went infinite, terminating.")
+            break
         loss.backward()  # backprop
         optimizer.step()  # GD step
         if i % count == 0:  # record loss statistics
             lossvec[i // count] = loss.detach().cpu().numpy()
             lossterms[i // count] = torch.tensor(terms).detach().cpu()
             if loss < minloss:
-                minloss = loss
-                best = nu
+                minloss = loss.item()
+                best = nu.detach().clone()
             pbar.update(count)
             pbar.set_postfix(loss=loss.item())
     pbar.close()
