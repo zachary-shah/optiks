@@ -592,9 +592,8 @@ def optiks(C: np.ndarray,
                 Cnew=Cnew.detach().cpu(),
                 t=t.detach().cpu(),
                 g=g.detach().cpu(),
-                s=s.detach().cpu(),
                 ginit = ginit.detach().cpu(),
-                sinit = sinit.detach().cpu(),
+                g_last = g_last.detach().cpu(),
             ),
             os.path.join(save_path, "opt.pt"),
         )
@@ -690,6 +689,8 @@ def initSolution(
     s0 = 3 * st0 * dt
     if ds is None:
         ds = s0 / 4.0  # Smaller step size for numerical accuracy
+        if verbose:
+            print(f"using ds: {ds}")
 
     s = np.arange(0, L, ds)
     s_half = np.arange(0, L, ds / 2)
