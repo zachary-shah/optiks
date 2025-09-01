@@ -288,7 +288,7 @@ def freq_min(v, T, g, dt, smax, weights, rv=False, params=None):
     gf = dt * torch.fft.rfft(g, n=nf, dim=0)
 
     with torch.no_grad():
-        freq = torch.fft.rfftfreq(nf, d=1.0).to(g.device) / dt
+        freq = torch.fft.rfftfreq(nf, d=1.0, device=g.device) / dt
         freq_bins = params['frequency']
         idx = torch.argwhere(
             reduce(
