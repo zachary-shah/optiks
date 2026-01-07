@@ -93,7 +93,7 @@ class SolverOpts:
     maxiter: int = 4000  # maximum allowed number of gradient descent steps
     count: int = 50  # number of iterations to display progress after
     derate: float = 0.8  # factor to derate initial (time optimal) solution v(s) by before optimizing
-    initsol: ndarray = None  # custom initial waveform solution - replaces time optimal solution (G/cm)
+    initsol: ndarray = None  # custom initial waveform solution - replaces time optimal solution (trj in 1/cm)
     lr: float = 1e-4  # initial learning rate for AdamW optimizer
     device: torch.device = torch.device("cpu")
     us_factor: int = 10

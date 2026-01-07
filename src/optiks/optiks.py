@@ -208,11 +208,12 @@ def optiks(C: np.ndarray,
 
     # If a solution was passed as an argument use this as initial v(s)
     if initsol is not None:
+        st0 = init[0]  # fastest reachable initial point
         initv_of_t = np.linalg.norm(np.diff(initsol, axis=0), axis=1) / dt
         inits_of_t = cumulative_trapezoid(initv_of_t * dt, axis=0, initial=0)
         init = interp1d(inits_of_t, initv_of_t, kind='linear')(s[s <= inits_of_t[-1]])
         init = np.hstack((init, init[-1]*np.ones_like(s[s > inits_of_t[-1]])))
-        init[0] = st0
+        init[0] = st0  # ensure initial condition is met
 
     # Preparing optimization variable and moving variables to Torch=====================================================
     weights['time'] = weights['time'] / np.trapz(ds / init)  # normalizing timing weight by time optimal duration
@@ -224,7 +225,7 @@ def optiks(C: np.ndarray,
         nu = torch.zeros(init.size, device=device)  # using constant initialization
     else:
         nu = derate * init
-        nu = torch.tensor(np.log(nu / (phi - nu)), device=device)  # using de-rated time-optimal solution
+        nu = torch.tensor(np.log(nu / (phi - nu).clip(1e-6, None)), device=device)  # using de-rated time-optimal solution
     nu.requires_grad = True
 
     # Moving variables to device
@@ -246,7 +247,7 @@ def optiks(C: np.ndarray,
 
     # check len of initial trj
     init = torch.tensor(init, device=device)
-    t_of_s = torch.cumulative_trapezoid(1 / init * ds)
+    t_of_s = torch.cumulative_trapezoid(ds / init)
     t_of_s = torch.hstack((torch.tensor(0, device=device), t_of_s))
     t_init = torch.arange(0, 1, dt / t_of_s[-1].detach(), dtype=dtype, device=device) * t_of_s[-1]
     s_of_t = torch_interp1d(s, t_of_s, t_init)

@@ -286,10 +286,16 @@ def freq_min(v, T, g, dt, smax, weights, rv=False, params=None):
     """
     nf = int(g.numel() / 2 * 10)
     gf = dt * torch.fft.rfft(g, n=nf, dim=0)
+    b_weight_eval = None
 
     with torch.no_grad():
         freq = torch.fft.rfftfreq(nf, d=1.0, device=g.device) / dt
         freq_bins = params['frequency']
+        b_weights = params.get("b_weights", None)
+        b_freqs = params.get("b_freqs", None)
+        if b_weights is not None:
+            b_weight_eval = torch_interp1d(b_weights, b_freqs, freq)
+        
         idx = torch.argwhere(
             reduce(
                 lambda ind, fed: 
@@ -306,9 +312,12 @@ def freq_min(v, T, g, dt, smax, weights, rv=False, params=None):
                         freq <= freq_bins[0][1],
                     )
             )
-        ).T
+        ).flatten()
     
-    term = weights['frequency'] * gf[idx].norm()
+    if b_weight_eval is not None:
+        term = weights['frequency'] * ((b_weight_eval[idx][:, None] * gf[idx]).norm())
+    else:
+        term = weights['frequency'] * gf[idx].norm()
 
     return term
 
