@@ -618,6 +618,7 @@ def initSolution(
         smax: float = 15, 
         dt: float = 4e-3, 
         ds: Optional[float] = None, 
+        dp: Optional[float] = None,
         rv: bool = False,
         interp_kind: str = 'cubic',
         verbose: bool = True) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -674,7 +675,8 @@ def initSolution(
     PP = CubicSpline(p, C)
 
     # Interpolate curve for gradient accuracy
-    dp = np.amin(np.diff(p)) / 10
+    if dp is None:
+        dp = np.amin(np.diff(p)) / 10
     p = np.arange(0, Lp, dp)
     CC = PP(p)
 
@@ -765,7 +767,7 @@ def initSolution(
     g = np.diff(C, axis=0) / GAMMA / dt
     g = np.vstack((g, 2 * g[-1, :] - g[-2, :]))
     s = np.linalg.norm(np.diff(g, axis=0), axis=1) / dt
-    if np.amax(s) > smax:
+    if np.amax(s) > smax and verbose:
         print('WARNING: MAXIMUM SLEW RATE VIOLATED IN TIME-OPTIMAL SOLUTION')
         print('LIMIT: ', smax, '\nMAX REACHED: ', np.amax(s), '\n')
 
